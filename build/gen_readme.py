@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 
-base = r"D:\softInfo\workbuddy\2026-11-20-23-39-57"
+base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "legacy", "v1")
 
 readme = """手机音频托盘  v1.3
 ============================================================

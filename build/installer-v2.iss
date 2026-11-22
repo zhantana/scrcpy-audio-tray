@@ -3,7 +3,7 @@
 #define MyAppVersion "2.0.0"
 #define MyAppPublisher "ScrcpyAudioTray"
 #define ScrcpyDir "C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\scrcpy-win64-v5.0.1"
-#define V2Publish "dist-v2"
+#define V2Publish "..\dist-v2"
 
 [Setup]
 AppId={{B9E3D7A1-6C24-4F95-AE30-8D2C6F1B4E77}
@@ -20,7 +20,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
 OutputBaseFilename=ScrcpyAudioTrayV2-Setup-{#MyAppVersion}
-SetupIconFile=tray-active.ico
+SetupIconFile=..\legacy\v1\tray-active.ico
 UninstallDisplayIcon={app}\PhoneAudioTray.exe
 UninstallDisplayName={#MyAppName}
 Compression=lzma2/max
@@ -33,7 +33,7 @@ ShowLanguageDialog=no
 MinVersion=10.0
 
 [Languages]
-Name: "cn"; MessagesFile: "build\ChineseSimplified.isl"
+Name: "cn"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："
@@ -42,7 +42,7 @@ Name: "startup"; Description: "开机自动启动（静默启动）"; GroupDescr
 [Files]
 Source: "{#V2Publish}\PhoneAudioTray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#V2Publish}\Resources\*"; DestDir: "{app}\Resources"; Flags: ignoreversion
-Source: "README-V2.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\README-V2.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; scrcpy 引擎（v2 也依赖它）
 Source: "{#ScrcpyDir}\*"; DestDir: "{app}\scrcpy"; Flags: ignoreversion recursesubdirs createallsubdirs
 

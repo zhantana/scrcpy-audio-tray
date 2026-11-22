@@ -2,7 +2,7 @@
 import zlib, struct, math, os
 
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-OUT = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'legacy', 'v1')
 
 
 def lerp(a, b, t):

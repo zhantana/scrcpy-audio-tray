@@ -17,7 +17,7 @@ text = """============================================================
 3. 双击桌面「手机音频托盘 v2」启动（右下角出现图标）
 
 无线
-1. 手机打开「无线调试」，用 v1 目录里的「无线-首次配对.bat」配对过即可
+1. 手机打开「无线调试」，用 legacy/v1 目录里的「无线-首次配对.bat」配对过即可
 2. 双击桌面图标启动
 
 启动后自动选设备、自动开始投屏和音频转发。
@@ -80,6 +80,8 @@ text = """============================================================
 只删 v2 自己的目录，不影响 v1。
 """
 
-with open('README-V2.txt', 'w', encoding='gbk', newline='\r\n') as f:
+import os
+_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+with open(os.path.join(_root, 'README-V2.txt'), 'w', encoding='gbk', newline='\r\n') as f:
     f.write(text)
 print('README-V2.txt generated')
