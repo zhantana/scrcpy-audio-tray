@@ -150,7 +150,17 @@ public sealed class AdbClient
 
     public void DismissKeyguard(string serial) => Shell(serial, "wm dismiss-keyguard");
 
-    public string GetDeviceState(string serial) => Shell(serial, "dumpsys window policy");
+    /// <summary>
+    /// 设备状态原文。必须合并两条命令：isKeyguardShowing 在 dumpsys window 里，
+    /// interactiveState/screenState 在 dumpsys window policy 里——实测 policy 输出无
+    /// isKeyguardShowing，只跑一条会恒判未锁（对齐 v1 的合并查询）。
+    /// </summary>
+    public string GetDeviceState(string serial)
+    {
+        var o = Shell(serial, "dumpsys window policy");
+        o += "\n" + Shell(serial, "dumpsys window");
+        return o;
+    }
 
     public record ScreenState(bool On, bool Locked, bool Valid);
 

@@ -26,6 +26,8 @@ public partial class App : System.Windows.Application
     private int _embedTicks;
     private DispatcherTimer? _sizeSaveTimer;
     private SleepMonitor? _sleepMonitor;
+    // 手动唤醒后重启投屏的那一轮跳过启动前解锁，避免解两次
+    private bool _skipUnlockOnce;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -135,15 +137,34 @@ public partial class App : System.Windows.Application
 
     private void ToggleScreen()
     {
-        if (_screen.IsRunning)
+        if (_screen.IsRunning) { StopScreen(); return; }
+        StartScreen();
+    }
+
+    /// <summary>停掉投屏，把屏幕控制权还给 adb（唤醒解锁的前置条件）。</summary>
+    private void StopScreen()
+    {
+        _embedTimer?.Stop();
+        _sleepMonitor?.Stop();
+        _mainWindow?.ShowSleepOverlay(false);
+        _mainWindow?.Detach();
+        _screen.Stop();
+    }
+
+    /// <summary>启动投屏。手动唤醒后的重启通过 _skipUnlockOnce 跳过启动前解锁。</summary>
+    private void StartScreen()
+    {
+        var serial = _screen.Serial ?? _config.Settings.Serial;
+        var doUnlock = !_skipUnlockOnce;
+        _skipUnlockOnce = false;
+        if (doUnlock && !string.IsNullOrEmpty(serial))
         {
-            _embedTimer?.Stop();
-            _sleepMonitor?.Stop();
-            _mainWindow?.ShowSleepOverlay(false);
-            _mainWindow?.Detach();
-            _screen.Stop();
-            return;
+            // 启动前先解锁，避免投出锁屏画面（对齐 v1）
+            var ur = UnlockWithPinPrompt(serial);
+            if (!ur.Ok)
+                _tray.Notify("没能自动解锁", "手机还在锁屏界面。可右键「唤醒并解锁」再试");
         }
+
         _config.Settings.Screen = true;
         _sleepMonitor!.Serial = _screen.Serial;
         _sleepMonitor.Start();
@@ -262,15 +283,53 @@ public partial class App : System.Windows.Application
         _tray.Notify($"{purpose}键已设置", spec);
     }
 
+    /// <summary>
+    /// 解锁；遇到 NEED_PIN（首次没存密码）时弹一次输入框，保存后自动重试。取消则原样返回。
+    /// </summary>
+    private UnlockService.Result UnlockWithPinPrompt(string serial, bool forceWake = false)
+    {
+        var r = _unlock.Invoke(serial, forceWake);
+        if (r.Message == "NEED_PIN")
+        {
+            var win = new PinPromptWindow();
+            win.ShowDialog();
+            var pin = win.Result;
+            if (string.IsNullOrEmpty(pin))
+                return new UnlockService.Result(false, "NEED_PIN");
+            _unlock.SavePin(pin);
+            r = _unlock.Invoke(serial, forceWake);
+        }
+        return r;
+    }
+
     private void DoWake()
     {
         var serial = _screen.Serial ?? _config.Settings.Serial;
         if (string.IsNullOrEmpty(serial)) return;
-        var r = _unlock.Invoke(serial);
-        if (r.Message == "NEED_PIN")
+
+        // 投屏时屏幕归 scrcpy 管，adb 点不亮：先停投屏拿回屏幕 → 强唤醒解锁 → 重启投屏
+        var wasRunning = _screen.IsRunning;
+        if (wasRunning)
+        {
+            StopScreen();
+            System.Threading.Thread.Sleep(400); // 等 scrcpy 释放显示电源
+        }
+
+        var r = UnlockWithPinPrompt(serial, forceWake: wasRunning);
+
+        if (wasRunning)
+        {
+            // 解锁已完成，重启投屏时跳过启动前解锁，避免解两次
+            _skipUnlockOnce = true;
+            StartScreen();
+        }
+
+        if (!r.Ok && r.Message == "NEED_PIN")
             _tray.Notify("需要锁屏密码", "请在托盘设置里填写，或手动解锁手机");
-        else
+        else if (r.Ok)
             _tray.Notify("唤醒解锁", r.Message);
+        else
+            _tray.Notify("唤醒解锁失败", r.Message);
     }
 
     private void SetMode(string mode)

@@ -1,0 +1,15 @@
+<Window x:Class="PhoneAudioTray.UI.Views.PinPromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="解锁密码" Height="220" Width="400"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+    <StackPanel Margin="20">
+        <TextBlock Text="手机设有锁屏密码。输入一次，保存后自动解锁；下次不再询问。"
+                   TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"/>
+        <PasswordBox x:Name="PinBox" Height="34" FontSize="16" Margin="0,0,0,16" KeyDown="PinBox_KeyDown"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="取消" Width="88" Height="34" Margin="0,0,12,0" Click="BtnCancel_Click"/>
+            <Button Content="保存并解锁" Width="110" Height="34" Click="BtnOk_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
