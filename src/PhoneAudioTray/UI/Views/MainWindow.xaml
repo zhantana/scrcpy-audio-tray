@@ -1,10 +1,50 @@
 <Window x:Class="PhoneAudioTray.UI.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="手机音频托盘" Height="600" Width="420"
-        WindowStartupLocation="CenterScreen">
-    <Grid>
-        <TextBlock Text="v2 骨架 — 功能开发中" HorizontalAlignment="Center"
-                   VerticalAlignment="Center" FontSize="16" Foreground="#888"/>
+        Title="手机音频托盘" Height="900" Width="440"
+        WindowStyle="None" ResizeMode="CanResizeWithGrip"
+        Background="#121216" MinWidth="360" MinHeight="480"
+        AllowsTransparency="False">
+    <Window.InputBindings>
+        <KeyBinding Key="F11" Command="{Binding FullScreenCommand}"/>
+    </Window.InputBindings>
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 单行顶栏：操作（最左）/ 最小化 / 关闭。最大化靠双击顶栏 -->
+        <Grid x:Name="TopBar" Grid.Row="0" Background="#1C1C22" MouseLeftButtonDown="TopBar_MouseLeftButtonDown">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Menu Grid.Column="0" Background="Transparent" Foreground="#DDD" VerticalAlignment="Center" Margin="8,0,0,0">
+                <MenuItem Header="操作" x:Name="MenuRoot" Foreground="#DDD"/>
+            </Menu>
+
+            <Button Grid.Column="2" x:Name="BtnMin" Content="─" Width="44" Height="40"
+                    Background="Transparent" Foreground="#CCC" BorderThickness="0"
+                    FontSize="16" Click="BtnMin_Click" ToolTip="最小化"/>
+            <Button Grid.Column="3" x:Name="BtnClose" Content="✕" Width="44" Height="40"
+                    Background="Transparent" Foreground="#CCC" BorderThickness="0"
+                    FontSize="14" Click="BtnClose_Click" ToolTip="停止投屏并关闭窗口"/>
+        </Grid>
+
+        <!-- 内容区：嵌入的 scrcpy 画面 -->
+        <Grid Grid.Row="1" x:Name="ContentArea" Background="Black"/>
+
+        <!-- 息屏提示层（任务2实现，先占位隐藏） -->
+        <Grid Grid.Row="1" x:Name="SleepOverlay" Visibility="Collapsed" Background="#E0000000">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="手机已息屏" Foreground="#EEE" FontSize="20" HorizontalAlignment="Center" Margin="0,0,0,16"/>
+                <Button x:Name="BtnWake" Content="唤醒并解锁" Padding="20,8" FontSize="14"
+                        Background="#3A7afe" Foreground="White" BorderThickness="0" Click="BtnWake_Click"/>
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

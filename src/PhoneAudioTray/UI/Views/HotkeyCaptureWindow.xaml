@@ -1,0 +1,16 @@
+<Window x:Class="PhoneAudioTray.UI.Views.HotkeyCaptureWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置快捷键" Height="190" Width="380"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#1C1C22">
+    <StackPanel Margin="20" VerticalAlignment="Center">
+        <TextBlock x:Name="LblTitle" Text="请按下要用的快捷键" Foreground="#EEE" FontSize="15" Margin="0,0,0,6"/>
+        <TextBlock x:Name="LblCurrent" Text="" Foreground="#AAA" FontSize="12" Margin="0,0,0,14"/>
+        <Border Background="#25252C" CornerRadius="4" Padding="14,10" BorderBrush="#3A3A44" BorderThickness="1">
+            <TextBlock x:Name="LblKey" Text="等待按键…" Foreground="#5CD6A0" FontSize="18" HorizontalAlignment="Center"/>
+        </Border>
+        <TextBlock Text="直接按组合键或单键都可以；Esc 取消。单键会被全局占用，其他程序收不到该键。"
+                   Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="0,14,0,0"/>
+    </StackPanel>
+</Window>

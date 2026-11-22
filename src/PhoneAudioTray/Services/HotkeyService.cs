@@ -61,6 +61,13 @@ public sealed class HotkeyService : IDisposable
             RegisterFailed?.Invoke(this, $"{label}「{spec}」被别的软件占用");
     }
 
+    /// <summary>录制前先注销全部热键，否则录当前键时会被系统吞掉。</summary>
+    public void Suspend()
+    {
+        _window.Unregister(IdPause);
+        _window.Unregister(IdScreen);
+    }
+
     public void SetPause(string spec)
     {
         _config.Settings.HotkeyPause = spec.Trim();

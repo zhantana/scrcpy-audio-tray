@@ -129,6 +129,19 @@ public sealed class ScreenService
         Logger.Log($"size {(GetVideoRatio() < 1 ? "portrait" : "landscape")}={w}x{h}");
     }
 
+    public void SetMode(string mode)
+    {
+        _config.Settings.WindowMode = mode == "native" ? "native" : "embedded";
+        _config.Save();
+        StateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void SetOnTop(bool on)
+    {
+        _config.Settings.OnTop = on;
+        _config.Save();
+    }
+
     public void ResetSizes()
     {
         _config.Settings.SizePortrait = Array.Empty<int>();

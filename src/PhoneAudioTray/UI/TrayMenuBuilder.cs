@@ -1,6 +1,4 @@
-using System.Windows;
 using System.Windows.Controls;
-using PhoneAudioTray.Services;
 
 namespace PhoneAudioTray.UI;
 
@@ -9,15 +7,20 @@ namespace PhoneAudioTray.UI;
 /// </summary>
 public static class TrayMenuBuilder
 {
-    public static ContextMenu Build(Action onToggleScreen, Action onMediaPause,
+    public static ContextMenu Build(
+        Action onToggleScreen, Action onMediaPause, Action onWake,
         Action onShowWindow, Action onResetSize, Action onExit,
-        bool running, bool screenOn, bool native, bool onTop,
+        Action onEditPauseKey, Action onEditScreenKey, Action onSettings,
+        Action onEmbedded, Action onNative, Action onToggleTop,
+        bool running, bool native, bool onTop,
+        string pauseKey, string screenKey,
         IReadOnlyList<(string label, Action click)> devices)
     {
         var menu = new ContextMenu();
 
         menu.Items.Add(MenuItem(running ? "停止投屏" : "启动投屏", onToggleScreen));
         menu.Items.Add(MenuItem("暂停 / 继续（手机媒体）", onMediaPause));
+        menu.Items.Add(MenuItem("唤醒并解锁", onWake));
         menu.Items.Add(new Separator());
 
         var dev = new MenuItem { Header = "设备" };
@@ -26,11 +29,20 @@ public static class TrayMenuBuilder
         menu.Items.Add(dev);
 
         var mode = new MenuItem { Header = "窗口模式" };
-        mode.Items.Add(CheckItem("程序窗口", !native, () => { }));
-        mode.Items.Add(CheckItem("scrcpy 原生窗口", native, () => { }));
+        var embedded = CheckItem("程序窗口", !native, onEmbedded);
+        var nativeItem = CheckItem("scrcpy 原生窗口", native, onNative);
+        mode.Items.Add(embedded);
+        mode.Items.Add(nativeItem);
         menu.Items.Add(mode);
 
-        menu.Items.Add(CheckItem("投屏窗口置顶", onTop, () => { }));
+        menu.Items.Add(CheckItem("投屏窗口置顶", onTop, onToggleTop));
+
+        var keys = new MenuItem { Header = "快捷键" };
+        keys.Items.Add(MenuItem($"修改暂停键（{pauseKey}）", onEditPauseKey));
+        keys.Items.Add(MenuItem($"修改投屏键（{screenKey}）", onEditScreenKey));
+        menu.Items.Add(keys);
+
+        menu.Items.Add(MenuItem("设置（画质 / 帧率 / 音频）", onSettings));
         menu.Items.Add(MenuItem("显示 / 隐藏窗口", onShowWindow));
         menu.Items.Add(MenuItem("重置窗口尺寸", onResetSize));
         menu.Items.Add(new Separator());

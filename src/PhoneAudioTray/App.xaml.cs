@@ -1,9 +1,11 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Forms;
+using System.Windows.Threading;
 using PhoneAudioTray.Infrastructure;
 using PhoneAudioTray.Services;
 using PhoneAudioTray.UI;
+using PhoneAudioTray.UI.Views;
 using WfMouseButtons = System.Windows.Forms.MouseButtons;
 
 namespace PhoneAudioTray;
@@ -19,6 +21,10 @@ public partial class App : System.Windows.Application
     private UnlockService _unlock = null!;
     private HotkeyService _hotkeys = null!;
     private TrayIconService _tray = null!;
+    private MainWindow? _mainWindow;
+    private DispatcherTimer? _embedTimer;
+    private int _embedTicks;
+    private SleepMonitor? _sleepMonitor;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -46,6 +52,14 @@ public partial class App : System.Windows.Application
         _unlock = new UnlockService(_adb);
         _hotkeys = new HotkeyService(_config);
         _tray = new TrayIconService(dir);
+        _sleepMonitor = new SleepMonitor(_adb);
+        _sleepMonitor.AsleepChanged += (_, asleep) =>
+        {
+            // 程序窗口模式下在窗口内提示；原生模式下用托盘气泡
+            _mainWindow?.ShowSleepOverlay(asleep);
+            if (asleep && _screen.IsNative)
+                _tray.Notify("手机已息屏", "按快捷键唤醒，或右键 → 唤醒并解锁");
+        };
 
         // 事件接线
         _tray.Clicked += OnTrayClicked;
@@ -89,13 +103,21 @@ public partial class App : System.Windows.Application
         return TrayMenuBuilder.Build(
             onToggleScreen: ToggleScreen,
             onMediaPause: DoMediaPause,
+            onWake: DoWake,
             onShowWindow: ShowMainWindow,
             onResetSize: () => { _screen.ResetSizes(); _tray.Notify("窗口尺寸", "已重置"); },
             onExit: ExitApp,
+            onEditPauseKey: () => EditHotkey("暂停", true),
+            onEditScreenKey: () => EditHotkey("投屏", false),
+            onSettings: OpenSettings,
+            onEmbedded: () => SetMode("embedded"),
+            onNative: () => SetMode("native"),
+            onToggleTop: () => { _screen.SetOnTop(!_config.Settings.OnTop); ApplyTopMost(); },
             running: _screen.IsRunning,
-            screenOn: _config.Settings.Screen,
             native: _screen.IsNative,
             onTop: _config.Settings.OnTop,
+            pauseKey: _config.Settings.HotkeyPause,
+            screenKey: _config.Settings.HotkeyScreen,
             devices: devs);
     }
 
@@ -111,11 +133,149 @@ public partial class App : System.Windows.Application
     {
         if (_screen.IsRunning)
         {
+            _embedTimer?.Stop();
+            _sleepMonitor?.Stop();
+            _mainWindow?.ShowSleepOverlay(false);
+            _mainWindow?.Detach();
             _screen.Stop();
             return;
         }
         _config.Settings.Screen = true;
+        _sleepMonitor!.Serial = _screen.Serial;
+        _sleepMonitor.Start();
+
+        if (!_screen.IsNative)
+        {
+            // 嵌入模式：先把窗口立起来，再让 scrcpy 建在屏幕外，稍后嵌入
+            EnsureMainWindow();
+            _mainWindow!.Show();
+        }
         _screen.Start();
+
+        if (!_screen.IsNative)
+            StartEmbedPolling();
+    }
+
+    /// <summary>轮询等待 scrcpy 窗口建好，然后嵌入。失败降级到原生窗口。</summary>
+    private void StartEmbedPolling()
+    {
+        _embedTimer?.Stop();
+        _embedTicks = 0;
+        _embedTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _embedTimer.Tick += (_, _) =>
+        {
+            _embedTicks++;
+            // 按我们设定的标题前缀找 v2 自己的窗口（v1 的窗口标题是设备ID，不会误匹配）
+            var prefix = $"ScrcpyBridge|{_screen.Serial}";
+            var hwnd = NativeMethods.FindWindowByPrefix(prefix);
+            if (hwnd != IntPtr.Zero && _mainWindow is not null && _mainWindow.TryEmbed(hwnd))
+            {
+                _embedTimer!.Stop();
+                Logger.Log($"embedded ok hwnd={hwnd.ToInt64()}");
+            }
+            else if (_embedTicks > 60) // 7 秒还没嵌进去，降级
+            {
+                _embedTimer!.Stop();
+                _tray.Notify("画面已回退到独立窗口", "嵌入失败，音频与解锁不受影响");
+                Logger.Log("embed timeout -> fallback");
+            }
+        };
+        _embedTimer.Start();
+    }
+
+    private void EnsureMainWindow()
+    {
+        if (_mainWindow is not null) return;
+        _mainWindow = new MainWindow();
+        var menuItems = BuildMenuItems();
+        _mainWindow.Configure(menuItems,
+            onClose: () => { _embedTimer?.Stop(); _mainWindow?.Detach(); _screen.Stop(); },
+            onWake: () => DoWake());
+    }
+
+    private List<(string header, Action click)> BuildMenuItems()
+        => new()
+        {
+            ("启动 / 停止投屏", ToggleScreen),
+            ("暂停 / 继续（手机媒体）", DoMediaPause),
+            ("唤醒并解锁", DoWake),
+            ($"修改暂停键（{_config.Settings.HotkeyPause}）", () => EditHotkey("暂停", true)),
+            ($"修改投屏键（{_config.Settings.HotkeyScreen}）", () => EditHotkey("投屏", false)),
+            ("设置（画质 / 帧率 / 音频）", OpenSettings),
+            ("重置窗口尺寸", () => { _screen.ResetSizes(); _tray.Notify("窗口尺寸", "已重置"); }),
+            ("退出", ExitApp),
+        };
+
+    private void OpenSettings()
+    {
+        var win = new SettingsWindow(_config, () =>
+        {
+            // 画质参数改了要重启投屏才生效
+            if (_screen.IsRunning)
+            {
+                _embedTimer?.Stop();
+                _mainWindow?.Detach();
+                _screen.Stop();
+                ToggleScreen();
+            }
+        });
+        win.ShowDialog();
+    }
+
+    private void EditHotkey(string purpose, bool isPause)
+    {
+        _hotkeys.Suspend(); // 录当前键时不能被触发
+        var current = isPause ? _config.Settings.HotkeyPause : _config.Settings.HotkeyScreen;
+        var win = new HotkeyCaptureWindow(purpose, current);
+        win.ShowDialog();
+        var spec = win.Result;
+        if (spec is null)
+        {
+            _hotkeys.RegisterAll(); // 取消：恢复原热键
+            return;
+        }
+        if (isPause) _hotkeys.SetPause(spec);
+        else _hotkeys.SetScreen(spec);
+        _tray.Notify($"{purpose}键已设置", spec);
+    }
+
+    private void DoWake()
+    {
+        var serial = _screen.Serial ?? _config.Settings.Serial;
+        if (string.IsNullOrEmpty(serial)) return;
+        var r = _unlock.Invoke(serial);
+        if (r.Message == "NEED_PIN")
+            _tray.Notify("需要锁屏密码", "请在托盘设置里填写，或手动解锁手机");
+        else
+            _tray.Notify("唤醒解锁", r.Message);
+    }
+
+    private void SetMode(string mode)
+    {
+        if (_screen.IsNative == (mode == "native")) return; // 没变
+        var wasRunning = _screen.IsRunning;
+        if (wasRunning)
+        {
+            _embedTimer?.Stop();
+            _mainWindow?.Detach();
+            _mainWindow?.Hide();
+            _screen.Stop();
+        }
+        _screen.SetMode(mode);
+        if (wasRunning) ToggleScreen();
+        _tray.Notify("窗口模式", mode == "native" ? "scrcpy 原生窗口" : "程序窗口");
+    }
+
+    private void ApplyTopMost()
+    {
+        if (_mainWindow is not null)
+            _mainWindow.Topmost = _config.Settings.OnTop;
+        // 原生模式的置顶要重启投屏才生效
+        if (_screen.IsNative && _screen.IsRunning)
+        {
+            _screen.Stop();
+            ToggleScreen();
+        }
     }
 
     private void DoMediaPause()
@@ -127,13 +287,16 @@ public partial class App : System.Windows.Application
 
     private void ShowMainWindow()
     {
-        var win = new UI.Views.MainWindow();
-        win.Show();
+        if (_screen.IsNative) return; // 原生模式没有我们的窗口
+        EnsureMainWindow();
+        _mainWindow!.Show();
+        _mainWindow.Activate();
     }
 
     private void ExitApp()
     {
         _screen.Stop();
+        _sleepMonitor?.Stop();
         _hotkeys.Dispose();
         _tray.Dispose();
         _config.Save();

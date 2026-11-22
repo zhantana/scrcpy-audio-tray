@@ -151,4 +151,24 @@ public sealed class AdbClient
     public void DismissKeyguard(string serial) => Shell(serial, "wm dismiss-keyguard");
 
     public string GetDeviceState(string serial) => Shell(serial, "dumpsys window policy");
+
+    public record ScreenState(bool On, bool Locked, bool Valid);
+
+    /// <summary>息屏/锁屏判定：interactiveState 优先，读不到退回 screenState。</summary>
+    public ScreenState GetScreenState(string serial)
+    {
+        var txt = Shell(serial, "dumpsys window policy");
+        txt += "\n" + Shell(serial, "dumpsys window");
+
+        bool awake = txt.Contains("interactiveState=INTERACTIVE_STATE_AWAKE");
+        bool asleep = txt.Contains("interactiveState=INTERACTIVE_STATE_SLEEP") ||
+                      txt.Contains("interactiveState=INTERACTIVE_STATE_DOZING");
+        if (!awake && !asleep)
+        {
+            awake = txt.Contains("screenState=SCREEN_STATE_ON");
+            asleep = txt.Contains("screenState=SCREEN_STATE_OFF");
+        }
+        bool locked = txt.Contains("isKeyguardShowing=true") || txt.Contains("mShowingLockscreen=true");
+        return new ScreenState(awake && !asleep, locked, !string.IsNullOrWhiteSpace(txt));
+    }
 }
