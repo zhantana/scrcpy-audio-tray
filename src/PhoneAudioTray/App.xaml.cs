@@ -55,10 +55,21 @@ public partial class App : System.Windows.Application
         _hotkeys.RegisterFailed += (_, msg) => _tray.Notify("快捷键", msg);
         _screen.StateChanged += (_, _) => _tray.SetActive(_screen.IsRunning);
 
-        _screen.Serial = _config.Settings.Serial;
+        // 自动选设备：优先沿用记忆的，其次 USB，最后任意在线设备
+        var online = _devices.Refresh();
+        var pick = _config.Settings.Serial;
+        if (string.IsNullOrEmpty(pick) || !online.Any(d => d.Serial == pick))
+        {
+            var usb = online.FirstOrDefault(d => DeviceService.KindOf(d.Serial) == "USB");
+            pick = (usb ?? online.FirstOrDefault())?.Serial;
+        }
+        _screen.Serial = pick;
         _config.Settings.Screen = true; // 启动即投屏
         _hotkeys.RegisterAll();
-        ToggleScreen(); // 启动即开始转发
+        if (!string.IsNullOrEmpty(pick))
+            ToggleScreen(); // 启动即开始转发
+        else
+            _tray.Notify("没有设备", "先连手机：USB 或无线调试");
     }
 
     private void OnTrayClicked(object? sender, WfMouseButtons button)
@@ -136,6 +147,17 @@ public partial class App : System.Windows.Application
         System.Console.WriteLine($"[selftest] scrcpy: {scrcpy ?? "未找到"}");
         if (scrcpy is null) return;
         var adb = new AdbClient(scrcpy);
+        var devs = adb.ListDevices();
+        System.Console.WriteLine($"[selftest] devices: {devs.Count}");
+        foreach (var d in devs)
+        {
+            System.Console.WriteLine($"[selftest]   {d.Serial} model={d.Model} kind={DeviceService.KindOf(d.Serial)}");
+            var vs = adb.GetVideoSize(d.Serial);
+            System.Console.WriteLine($"[selftest]   videoSize={(vs.Length == 2 ? $"{vs[0]}x{vs[1]}" : "读不到")}");
+            var ss = adb.GetScreenSize(d.Serial);
+            System.Console.WriteLine($"[selftest]   screenSize={ss[0]}x{ss[1]}");
+            System.Console.WriteLine($"[selftest]   mediaSession={adb.HasMediaSession(d.Serial)}");
+        }
         System.Console.WriteLine("[selftest] hotkey parse Ctrl+Alt+P: " +
             HotkeyParser.TryParse("Ctrl+Alt+P", out var m, out var k) + $" mods={m} key={k}");
         System.Console.WriteLine("[selftest] hotkey parse Pause: " +
