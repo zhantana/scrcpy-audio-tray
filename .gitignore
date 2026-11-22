@@ -19,5 +19,6 @@ scrcpy/
 # 编译产物
 bin/
 obj/
+dist-v2/
 *.user
 build/tmp/
