@@ -1,0 +1,37 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# C# / WPF / 项目文件
+[*.{cs,xaml,csproj,props,targets}]
+indent_style = space
+indent_size = 4
+
+# JSON / Markdown / YAML
+[*.{json,md,yml,yaml}]
+indent_style = space
+indent_size = 2
+[*.md]
+trim_trailing_whitespace = false
+
+# Python（构建脚本）
+[*.py]
+indent_style = space
+indent_size = 4
+
+# PowerShell：UTF-8 BOM + CRLF（PS5.1 兼容要求）
+[*.{ps1,psm1,psd1}]
+charset = utf-8-bom
+
+# Inno Setup 脚本
+[*.iss]
+indent_style = space
+indent_size = 4
+
+# 批处理：GBK + CRLF（editorconfig 不支持 GBK，编码用 CLAUDE.md 规则约束）
+[*.bat]
+indent_style = space
