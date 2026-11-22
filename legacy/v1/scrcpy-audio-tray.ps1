@@ -2550,7 +2550,7 @@ function Update-DeviceMenu($parent) {
     $miWifiAdd = New-Object System.Windows.Forms.ToolStripMenuItem
     $miWifiAdd.Text = '添加设备（IP:端口）…'
     $miWifiAdd.Add_Click({
-        $addr = Show-Input "填手机地址，如 192.168.1.29:45329`n只填 IP 时默认补 :5555" '添加无线设备' ''
+        $addr = Show-Input "填手机地址，如 192.168.1.100:45329`n只填 IP 时默认补 :5555" '添加无线设备' ''
         if ($addr -eq $null -or $addr.Trim() -eq '') { return }
         $msg = Connect-Address $addr
         Update-DeviceMenu $script:devMenuParent

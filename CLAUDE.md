@@ -35,4 +35,4 @@ python build/build_icons.py                          # 生成托盘图标 → le
 
 - Conventional Commits + 中文描述：`fix(v2): ...`、`feat: ...`、`chore: ...`。
 - 一个逻辑变更一个 commit；涉及 openspec 文档时与对应代码放同一个 commit。
-- Windows 下网络若直连 GitHub 失败，走本地代理 `127.0.0.1:7890`（已在 git 全局配置）。
+- Windows 下网络若直连 GitHub 失败，走本地代理（地址在 `.env` 的 `PROXY_URL`，已 gitignore；已在 git 全局配置）。
