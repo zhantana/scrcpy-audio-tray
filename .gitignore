@@ -15,3 +15,9 @@ dist/
 
 # scrcpy 与 adb 二进制（体积大，由构建脚本从 winget 目录拷贝）
 scrcpy/
+
+# 编译产物
+bin/
+obj/
+*.user
+build/tmp/
