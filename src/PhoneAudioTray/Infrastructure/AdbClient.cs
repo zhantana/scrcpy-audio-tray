@@ -89,6 +89,10 @@ public sealed class AdbClient
     private string Shell(string serial, string cmd, int timeoutMs = 8000)
         => Run($"-s {serial} shell {cmd}", timeoutMs).output;
 
+    /// <summary>执行任意 shell 命令（解锁手势、批量按键等）。</summary>
+    public string ShellRaw(string serial, string cmd, int timeoutMs = 8000)
+        => Shell(serial, cmd, timeoutMs);
+
     public record DeviceInfo(string Serial, string Model);
 
     public IReadOnlyList<DeviceInfo> ListDevices()
