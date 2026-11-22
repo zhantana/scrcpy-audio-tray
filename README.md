@@ -23,6 +23,8 @@
 │   └── Resources/          托盘图标
 ├── legacy/v1/              v1 全部遗留（脚本、启动器、图标、安装脚本）
 ├── build/                  构建辅助：图标生成、README 生成、Inno Setup 脚本
+├── docs/                   项目文档（入库）
+├── docs.local/             本机私有文档（gitignore，不入库）
 ├── openspec/               规格驱动开发（现状 specs / 待做 changes / 归档 archive）
 ├── README-V2.txt           v2 用户说明（随安装包分发，GBK 编码）
 ├── installer-v2.iss → build/installer-v2.iss

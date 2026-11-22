@@ -10,6 +10,9 @@ dist/
 # 工作区数据
 .workbuddy/
 
+# 所有 .local 目录：本机私有文档与笔记，一律不入库
+*.local/
+
 # 运行时日志
 *.log
 
