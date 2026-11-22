@@ -12,16 +12,24 @@ public sealed class EmbedService
     private IntPtr _child = IntPtr.Zero;
     private long _originalStyle;
     private bool _embedded;
+    private int _offsetX;
+    private int _offsetY;
 
     public bool IsEmbedded => _embedded && _child != IntPtr.Zero && NativeMethods.IsWindow(_child);
     public IntPtr ChildHandle => _child;
 
-    /// <summary>把 scrcpy 的窗口（由进程 MainWindowHandle 传入）嵌入。</summary>
-    public bool Attach(IntPtr hwnd, IntPtr parentHandle, int width, int height)
+    /// <summary>
+    /// 把 scrcpy 的窗口（由进程 MainWindowHandle 传入）嵌入。
+    /// offsetX/offsetY 是子窗口在父窗口客户区中的原点（物理像素），
+    /// 用于跳过主窗口顶栏，避免画面盖住菜单栏。
+    /// </summary>
+    public bool Attach(IntPtr hwnd, IntPtr parentHandle, int offsetX, int offsetY, int width, int height)
     {
         try
         {
             if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return false;
+            _offsetX = offsetX;
+            _offsetY = offsetY;
 
             // 先藏起来，避免原窗口在桌面闪一下
             NativeMethods.ShowWindow(hwnd, NativeMethods.SW_HIDE);
@@ -46,7 +54,7 @@ public sealed class EmbedService
                 var gotW = rc.Right - rc.Left;
                 var gotH = rc.Bottom - rc.Top;
                 if (Math.Abs(gotW - width) <= 4 && Math.Abs(gotH - height) <= 4) break;
-                NativeMethods.MoveWindow(hwnd, 0, 0, width, height, true);
+                NativeMethods.MoveWindow(hwnd, _offsetX, _offsetY, width, height, true);
                 Thread.Sleep(80);
             }
 
@@ -67,7 +75,7 @@ public sealed class EmbedService
     {
         if (!IsEmbedded || width <= 0 || height <= 0) return;
         var flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW;
-        NativeMethods.SetWindowPos(_child, IntPtr.Zero, 0, 0, width, height, flags);
+        NativeMethods.SetWindowPos(_child, IntPtr.Zero, _offsetX, _offsetY, width, height, flags);
     }
 
     /// <summary>降级：恢复原样式并脱离父窗口，让 scrcpy 自己显示。</summary>

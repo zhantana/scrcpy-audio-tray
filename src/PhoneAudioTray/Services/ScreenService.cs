@@ -89,11 +89,13 @@ public sealed class ScreenService
         if (saved.Length == 2 && saved[0] > 200 && saved[1] > 200)
             return (saved[0], saved[1]);
 
+        // 全部按 DIP 计算：入口的 workWidth/workHeight 来自 SystemParameters.WorkArea，
+        // 出口交给 Window.Width/Height，二者都是 DIP；物理像素只在嵌入 Win32 子窗口时换算。
         int maxH = (int)(workHeight * 0.95);
         int w, h;
         if (portrait)
         {
-            w = (int)(416 * UiScale);
+            w = 416;
             h = (int)((w - 2 * inset) / ratio) + chromeH + 2 * inset;
             if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * ratio) + 2 * inset; }
         }
@@ -104,19 +106,6 @@ public sealed class ScreenService
             if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * ratio) + 2 * inset; }
         }
         return (w, h);
-    }
-
-    private static double UiScale
-    {
-        get
-        {
-            try
-            {
-                using var g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero);
-                return g.DpiX / 96.0;
-            }
-            catch { return 1.0; }
-        }
     }
 
     public void RememberSize(int w, int h)

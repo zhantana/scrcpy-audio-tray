@@ -24,11 +24,15 @@ public partial class App : System.Windows.Application
     private MainWindow? _mainWindow;
     private DispatcherTimer? _embedTimer;
     private int _embedTicks;
+    private DispatcherTimer? _sizeSaveTimer;
     private SleepMonitor? _sleepMonitor;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 在任何窗口创建前声明 DPI 感知，避免与 DPI 感知的 scrcpy 之间出现二次缩放
+        try { NativeMethods.SetProcessDPIAware(); } catch { }
 
         if (e.Args.Contains("--selftest")) { SelfTest(); Shutdown(0); return; }
 
@@ -146,11 +150,18 @@ public partial class App : System.Windows.Application
 
         if (!_screen.IsNative)
         {
-            // 嵌入模式：先把窗口立起来，再让 scrcpy 建在屏幕外，稍后嵌入
+            // 嵌入模式：先把窗口立起来，按视频比例定尺寸，再让 scrcpy 以内容区尺寸建在屏幕外
             EnsureMainWindow();
             _mainWindow!.Show();
+            var work = System.Windows.SystemParameters.WorkArea;
+            var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, 40, 0);
+            var (cw, ch) = _mainWindow.ApplyWindowSize(winW, winH);
+            _screen.Start(cw, ch);
         }
-        _screen.Start();
+        else
+        {
+            _screen.Start();
+        }
 
         if (!_screen.IsNative)
             StartEmbedPolling();
@@ -190,7 +201,19 @@ public partial class App : System.Windows.Application
         var menuItems = BuildMenuItems();
         _mainWindow.Configure(menuItems,
             onClose: () => { _embedTimer?.Stop(); _mainWindow?.Detach(); _screen.Stop(); },
-            onWake: () => DoWake());
+            onWake: () => DoWake(),
+            onSizeCommitted: (w, h) =>
+            {
+                // 拖动时每一帧都会触发，防抖后只记最终尺寸
+                _sizeSaveTimer?.Stop();
+                _sizeSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+                _sizeSaveTimer.Tick += (_, _) =>
+                {
+                    _sizeSaveTimer!.Stop();
+                    _screen.RememberSize(w, h);
+                };
+                _sizeSaveTimer.Start();
+            });
     }
 
     private List<(string header, Action click)> BuildMenuItems()
