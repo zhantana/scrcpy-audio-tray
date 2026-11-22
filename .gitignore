@@ -1,0 +1,17 @@
+# 本机敏感配置：锁屏密码、WiFi 地址、设备序列号、别名
+device-pin.json
+settings.json
+wifi_target.txt
+device-names.json
+
+# 构建产物（安装包 219MB）
+dist/
+
+# 工作区数据
+.workbuddy/
+
+# 运行时日志
+*.log
+
+# scrcpy 与 adb 二进制（体积大，由构建脚本从 winget 目录拷贝）
+scrcpy/
