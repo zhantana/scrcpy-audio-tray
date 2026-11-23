@@ -70,21 +70,23 @@ public sealed class ScreenService
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>视频流宽高比。读不到回退物理屏。</summary>
+    /// <summary>视频流宽高比。读不到回退物理屏，再读不到按竖屏默认 0.45（1080x2400 量级）。</summary>
     public double GetVideoRatio()
     {
         if (string.IsNullOrEmpty(_serial)) return 0.45;
         var v = _adb.GetVideoSize(_serial);
         if (v.Length == 2 && v[0] > 0 && v[1] > 0) return (double)v[0] / v[1];
         var p = _adb.GetScreenSize(_serial);
-        return (double)p[0] / p[1];
+        if (p.Length == 2 && p[0] > 0 && p[1] > 0) return (double)p[0] / p[1];
+        return 0.45;
     }
 
-    /// <summary>按方向和记忆尺寸算出窗口应有多大。工作区不超过屏幕 95%。</summary>
-    public (int w, int h) DesiredWindowSize(int workWidth, int workHeight, int chromeH, int inset)
+    /// <summary>按方向和记忆尺寸算出窗口应有多大。工作区不超过屏幕 95%。
+    /// ratio 已知（轮询传来）时直接用，避免再打一条 adb。</summary>
+    public (int w, int h) DesiredWindowSize(int workWidth, int workHeight, int chromeH, int inset, double? ratio = null)
     {
-        var ratio = GetVideoRatio();
-        bool portrait = ratio < 1;
+        var r = ratio ?? GetVideoRatio();
+        bool portrait = r < 1;
         var saved = portrait ? _config.Settings.SizePortrait : _config.Settings.SizeLandscape;
         if (saved.Length == 2 && saved[0] > 200 && saved[1] > 200)
             return (saved[0], saved[1]);
@@ -96,26 +98,28 @@ public sealed class ScreenService
         if (portrait)
         {
             w = 416;
-            h = (int)((w - 2 * inset) / ratio) + chromeH + 2 * inset;
-            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * ratio) + 2 * inset; }
+            h = (int)((w - 2 * inset) / r) + chromeH + 2 * inset;
+            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset; }
         }
         else
         {
             w = (int)(workWidth * 0.95);
-            h = (int)((w - 2 * inset) / ratio) + chromeH + 2 * inset;
-            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * ratio) + 2 * inset; }
+            h = (int)((w - 2 * inset) / r) + chromeH + 2 * inset;
+            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset; }
         }
         return (w, h);
     }
 
-    public void RememberSize(int w, int h)
+    public void RememberSize(int w, int h, double? ratio = null)
     {
         if (IsNative) return;
         var size = new[] { w, h };
-        if (GetVideoRatio() < 1) _config.Settings.SizePortrait = size;
+        var r = ratio ?? GetVideoRatio();
+        var portrait = r < 1;
+        if (portrait) _config.Settings.SizePortrait = size;
         else _config.Settings.SizeLandscape = size;
         _config.Save();
-        Logger.Log($"size {(GetVideoRatio() < 1 ? "portrait" : "landscape")}={w}x{h}");
+        Logger.Log($"size {(portrait ? "portrait" : "landscape")}={w}x{h}");
     }
 
     public void SetMode(string mode)

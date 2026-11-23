@@ -1,8 +1,10 @@
+using System.Diagnostics;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Forms;
 using System.Windows.Threading;
 using PhoneAudioTray.Infrastructure;
+using PhoneAudioTray.Models;
 using PhoneAudioTray.Services;
 using PhoneAudioTray.UI;
 using PhoneAudioTray.UI.Views;
@@ -10,7 +12,7 @@ using WfMouseButtons = System.Windows.Forms.MouseButtons;
 
 namespace PhoneAudioTray;
 
-public partial class App : System.Windows.Application
+public partial class App : System.Windows.Application, IMenuHost
 {
     private ConfigService _config = null!;
     private AdbClient _adb = null!;
@@ -21,13 +23,22 @@ public partial class App : System.Windows.Application
     private UnlockService _unlock = null!;
     private HotkeyService _hotkeys = null!;
     private TrayIconService _tray = null!;
+    private KeepAwake _keepAwake = null!;
+    private DevicePoller _poller = null!;
     private MainWindow? _mainWindow;
+
+    private Mutex? _mutex;
+    private readonly SemaphoreSlim _gate = new(1, 1); // 启停串行化：防自动重连与手动操作并发
     private DispatcherTimer? _embedTimer;
     private int _embedTicks;
     private DispatcherTimer? _sizeSaveTimer;
-    private SleepMonitor? _sleepMonitor;
-    // 手动唤醒后重启投屏的那一轮跳过启动前解锁，避免解两次
-    private bool _skipUnlockOnce;
+    private bool _userStopped;    // 手动停止后，自动重连不复活（对齐 v1）
+    private string? _manualPick;  // 手动选过的设备优先于 USB 优先默认规则（会话内有效）
+    private DateTime _lastSwitch = DateTime.MinValue;
+    private List<AdbClient.DeviceInfo> _deviceCache = new();
+
+    /// <summary>顶栏 40 + 状态条 24（DIP），窗口高度中不属于画面的部分。</summary>
+    private const int ChromeH = 64;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -35,6 +46,14 @@ public partial class App : System.Windows.Application
 
         // 在任何窗口创建前声明 DPI 感知，避免与 DPI 感知的 scrcpy 之间出现二次缩放
         try { NativeMethods.SetProcessDPIAware(); } catch { }
+
+        _mutex = TryCreateMutex();
+        if (_mutex is null)
+        {
+            System.Windows.MessageBox.Show("手机音频托盘已经在运行了", "单实例");
+            Shutdown(0);
+            return;
+        }
 
         if (e.Args.Contains("--selftest")) { SelfTest(); Shutdown(0); return; }
 
@@ -58,134 +77,293 @@ public partial class App : System.Windows.Application
         _unlock = new UnlockService(_adb);
         _hotkeys = new HotkeyService(_config);
         _tray = new TrayIconService(dir);
-        _sleepMonitor = new SleepMonitor(_adb);
-        _sleepMonitor.AsleepChanged += (_, asleep) =>
+        _keepAwake = new KeepAwake(_adb);
+        _poller = new DevicePoller(_adb, Dispatcher);
+
+        RegisterExceptionHandlers();
+        WireEvents();
+        _hotkeys.RegisterAll();
+
+        if (_config.LoadCorrupt)
+            _tray.Notify("配置文件损坏", "settings.json 无法读取，已按默认设置启动；原文件已留档");
+        if (_tray.IconFallback)
+            _tray.Notify("托盘图标缺失", "Resources 下图标文件没找到，运行状态无法从图标区分");
+
+        // 启动即自动转发（spec「启动行为」）；设备未就绪时后台重试，全程不弹对话框
+        _ = RunStartupAsync();
+    }
+
+    private static Mutex? TryCreateMutex()
+    {
+        foreach (var name in new[] { @"Global\ScrcpyAudioTrayV2", @"Local\ScrcpyAudioTrayV2" })
         {
-            // 程序窗口模式下在窗口内提示；原生模式下用托盘气泡
+            try
+            {
+                var m = new Mutex(true, name, out var created);
+                if (created) return m;
+                m.Dispose();
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private void RegisterExceptionHandlers()
+    {
+        DispatcherUnhandledException += (_, e) =>
+        {
+            Logger.Log($"UI 异常: {e.Exception}");
+            _tray.Notify("程序异常", e.Exception.Message);
+            e.Handled = true; // 非致命异常不崩进程
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Logger.Log($"未处理异常: {e.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            Logger.Log($"后台任务异常: {e.Exception}");
+            e.SetObserved();
+        };
+    }
+
+    private void WireEvents()
+    {
+        _tray.Clicked += OnTrayClicked;
+        _tray.DoubleClicked += (_, _) => _ = OnTrayDoubleClicked();
+        _hotkeys.PausePressed += (_, _) => DoMediaPause();
+        _hotkeys.ScreenTogglePressed += (_, _) => _ = ToggleScreenAsync();
+        _hotkeys.RegisterFailed += (_, msg) => _tray.Notify("快捷键", msg);
+
+        _screen.StateChanged += (_, _) =>
+        {
+            if (!_screen.IsRunning) _poller.Stop();
+            UpdateStatus();
+        };
+
+        _poller.AsleepChanged += (_, asleep) =>
+        {
             _mainWindow?.ShowSleepOverlay(asleep);
+            if (asleep && !_config.Settings.Screen) return; // 纯音频没有画面，不做息屏提示
             if (asleep && _screen.IsNative)
                 _tray.Notify("手机已息屏", "按快捷键唤醒，或右键 → 唤醒并解锁");
         };
-
-        // 事件接线
-        _tray.Clicked += OnTrayClicked;
-        _tray.DoubleClicked += (_, _) => ToggleScreen();
-        _hotkeys.PausePressed += (_, _) => DoMediaPause();
-        _hotkeys.ScreenTogglePressed += (_, _) => ToggleScreen();
-        _hotkeys.RegisterFailed += (_, msg) => _tray.Notify("快捷键", msg);
-        _screen.StateChanged += (_, _) => _tray.SetActive(_screen.IsRunning);
-
-        // 自动选设备：优先沿用记忆的，其次 USB，最后任意在线设备
-        var online = _devices.Refresh();
-        var pick = _config.Settings.Serial;
-        if (string.IsNullOrEmpty(pick) || !online.Any(d => d.Serial == pick))
+        _poller.OrientationChanged += (_, ratio) =>
         {
-            var usb = online.FirstOrDefault(d => DeviceService.KindOf(d.Serial) == "USB");
-            pick = (usb ?? online.FirstOrDefault())?.Serial;
+            if (!_screen.IsRunning || _screen.IsNative || _mainWindow is null) return;
+            var work = SystemParameters.WorkArea;
+            var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, ChromeH, 0, ratio);
+            _mainWindow.ApplyWindowSize(winW, winH); // 内容区尺寸变化 → 嵌入子窗口自动跟随
+        };
+        _poller.DevicesRefreshed += (_, devs) =>
+        {
+            _deviceCache = devs.ToList();
+            TransportCheck();
+        };
+        _poller.SoundStolen += async (_, _) =>
+        {
+            if (!_screen.IsRunning || _userStopped) return;
+            _tray.Notify("声音已恢复", "检测到其他投屏退出，音频已整路重启");
+            await RestartForwardingCoreAsync(skipUnlock: true);
+        };
+        _poller.Start();
+    }
+
+    // ---------- 启动流程 ----------
+
+    private async Task RunStartupAsync()
+    {
+        await Task.Delay(600); // v1 节奏：启动 600ms 后静默尝试
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await EnsureConnectedAsync();
+            var devs = await Task.Run(() => _devices.RefreshMerged());
+            _deviceCache = devs.ToList();
+            if (_deviceCache.Count > 0)
+            {
+                await AutoStartAsync();
+                return;
+            }
+            if (attempt < 2) await Task.Delay(4000); // 失败每 4 秒重试，最多两次
+        }
+        _tray.Notify("没有设备", "先连手机：USB 或无线调试；托盘 → 设备 → WiFi 无线可添加");
+    }
+
+    private async Task AutoStartAsync()
+    {
+        PickDefaultDevice();
+        var wantScreen = _config.Settings.Screen;
+        _config.Settings.Screen = false; // 启动先保证音频通路，再按需叠加画面
+        await StartForwardingAsync(skipUnlock: false, userInitiated: false);
+        if (_screen.IsRunning && wantScreen)
+            await ToggleScreenAsync(skipUnlockIfEnabling: true);
+        else if (!_screen.IsRunning)
+        {
+            _config.Settings.Screen = wantScreen; // 没启动成，恢复用户偏好
+            _config.Save();
+        }
+    }
+
+    private void PickDefaultDevice()
+    {
+        // 记忆的优先 → USB 优先 → 任意在线（对齐 v1 Get-Serial）
+        var pick = _config.Settings.Serial;
+        if (string.IsNullOrEmpty(pick) || !_deviceCache.Any(d => d.Serial == pick))
+        {
+            var usb = _deviceCache.FirstOrDefault(d => DeviceService.KindOf(d.Serial) == "USB");
+            pick = (usb ?? _deviceCache.FirstOrDefault())?.Serial;
         }
         _screen.Serial = pick;
-        _config.Settings.Screen = true; // 启动即投屏
-        _hotkeys.RegisterAll();
-        if (!string.IsNullOrEmpty(pick))
-            ToggleScreen(); // 启动即开始转发
-        else
-            _tray.Notify("没有设备", "先连手机：USB 或无线调试");
     }
 
-    private void OnTrayClicked(object? sender, WfMouseButtons button)
+    private async Task EnsureConnectedAsync()
     {
-        if (button != WfMouseButtons.Right) return;
-        var menu = BuildMenu();
-        menu.IsOpen = true;
+        await Task.Run(() =>
+        {
+            foreach (var t in _config.Settings.WifiTargets) _adb.Connect(t);
+            foreach (var a in _adb.ListMdns()) _adb.Connect(a);
+        });
     }
 
-    private ContextMenu BuildMenu()
+    // ---------- 启停核心（全部经 _gate 串行） ----------
+
+    public void StartStopForwarding()
+        => _ = _screen.IsRunning
+            ? StopForwardingAsync(markUserStopped: true)
+            : StartForwardingAsync(skipUnlock: false, userInitiated: true);
+
+    private async Task StartForwardingAsync(bool skipUnlock, bool userInitiated)
     {
-        var devs = _devices.Refresh()
-            .Select(d => (_devices.NameOf(d) + (DeviceService.KindOf(d.Serial) == "WiFi" ? " [WiFi]" : " [USB]"),
-                          (Action)(() => SelectDevice(d.Serial))))
-            .ToList();
-
-        return TrayMenuBuilder.Build(
-            onToggleScreen: ToggleScreen,
-            onMediaPause: DoMediaPause,
-            onWake: DoWake,
-            onShowWindow: ShowMainWindow,
-            onResetSize: () => { _screen.ResetSizes(); _tray.Notify("窗口尺寸", "已重置"); },
-            onExit: ExitApp,
-            onEditPauseKey: () => EditHotkey("暂停", true),
-            onEditScreenKey: () => EditHotkey("投屏", false),
-            onSettings: OpenSettings,
-            onEmbedded: () => SetMode("embedded"),
-            onNative: () => SetMode("native"),
-            onToggleTop: () => { _screen.SetOnTop(!_config.Settings.OnTop); ApplyTopMost(); },
-            running: _screen.IsRunning,
-            native: _screen.IsNative,
-            onTop: _config.Settings.OnTop,
-            pauseKey: _config.Settings.HotkeyPause,
-            screenKey: _config.Settings.HotkeyScreen,
-            devices: devs);
+        if (_screen.IsRunning) return;
+        if (!userInitiated && _userStopped) return; // 手动停止后不自动复活
+        await _gate.WaitAsync();
+        try
+        {
+            if (!_screen.IsRunning) await StartCoreAsync(skipUnlock);
+        }
+        finally { _gate.Release(); }
     }
 
-    private void SelectDevice(string serial)
+    private async Task StopForwardingAsync(bool markUserStopped)
     {
-        _screen.Stop();
-        _screen.Serial = serial;
-        _tray.Notify("已切换设备", serial);
-        ToggleScreen();
+        await _gate.WaitAsync();
+        try
+        {
+            if (_screen.IsRunning)
+            {
+                _userStopped = markUserStopped;
+                await StopCoreAsync();
+            }
+            else if (markUserStopped) _userStopped = true;
+        }
+        finally { _gate.Release(); }
     }
 
-    private void ToggleScreen()
+    private async Task RestartForwardingCoreAsync(bool skipUnlock)
     {
-        if (_screen.IsRunning) { StopScreen(); return; }
-        StartScreen();
+        await _gate.WaitAsync();
+        try
+        {
+            await StopCoreAsync();
+            await StartCoreAsync(skipUnlock);
+        }
+        finally { _gate.Release(); }
     }
 
-    /// <summary>停掉投屏，把屏幕控制权还给 adb（唤醒解锁的前置条件）。</summary>
-    private void StopScreen()
-    {
-        _embedTimer?.Stop();
-        _sleepMonitor?.Stop();
-        _mainWindow?.ShowSleepOverlay(false);
-        _mainWindow?.Detach();
-        _screen.Stop();
-    }
-
-    /// <summary>启动投屏。手动唤醒后的重启通过 _skipUnlockOnce 跳过启动前解锁。</summary>
-    private void StartScreen()
+    private async Task StartCoreAsync(bool skipUnlock)
     {
         var serial = _screen.Serial ?? _config.Settings.Serial;
-        var doUnlock = !_skipUnlockOnce;
-        _skipUnlockOnce = false;
-        if (doUnlock && !string.IsNullOrEmpty(serial))
+        if (string.IsNullOrEmpty(serial))
         {
-            // 启动前先解锁，避免投出锁屏画面（对齐 v1）
-            var ur = UnlockWithPinPrompt(serial);
-            if (!ur.Ok)
-                _tray.Notify("没能自动解锁", "手机还在锁屏界面。可右键「唤醒并解锁」再试");
+            _tray.Notify("没有设备", "右键托盘 → 设备 → WiFi 无线可添加");
+            return;
         }
 
-        _config.Settings.Screen = true;
-        _sleepMonitor!.Serial = _screen.Serial;
-        _sleepMonitor.Start();
-
-        if (!_screen.IsNative)
+        // 启动前先解锁，避免投出锁屏画面（spec：--turn-screen-off 生效后 adb 点不亮屏幕）
+        if (!skipUnlock)
         {
-            // 嵌入模式：先把窗口立起来，按视频比例定尺寸，再让 scrcpy 以内容区尺寸建在屏幕外
+            var ur = await UnlockWithPinPromptAsync(serial);
+            if (!ur.Ok)
+                _tray.Notify("没能自动解锁",
+                    ur.Message == "NEED_PIN" ? "手机还在锁屏界面。可右键「唤醒并解锁」再试" : ur.Message);
+        }
+
+        _userStopped = false;
+        var screen = _config.Settings.Screen;
+        _keepAwake.ClearStale(serial);
+        if (screen) _keepAwake.Push(serial);
+
+        _poller.Serial = serial;
+        _poller.IsRunning = true;
+        _poller.SleepWatch = screen; // 纯音频不做息屏轮询
+        _poller.ResetRatio();
+        _poller.Start();
+
+        if (!_screen.IsNative && screen)
+        {
+            // 嵌入模式：先立窗口、按视频比例定尺寸，再让 scrcpy 以内容区尺寸建在屏幕外
             EnsureMainWindow();
             _mainWindow!.Show();
-            var work = System.Windows.SystemParameters.WorkArea;
-            var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, 40, 0);
+            var work = SystemParameters.WorkArea;
+            var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, ChromeH, 0);
             var (cw, ch) = _mainWindow.ApplyWindowSize(winW, winH);
             _screen.Start(cw, ch);
+            StartEmbedPolling();
         }
         else
         {
             _screen.Start();
+            _mainWindow?.Hide();
         }
 
-        if (!_screen.IsNative)
-            StartEmbedPolling();
+        _ = WakeAudioPathAsync(serial);
+        _poller.OtherBaseline = await Task.Run(() => CountOtherScrcpy(ownRunning: true));
+        UpdateStatus();
+    }
+
+    private async Task StopCoreAsync()
+    {
+        _embedTimer?.Stop();
+        var serial = _screen.Serial;
+        _mainWindow?.ShowSleepOverlay(false);
+        _mainWindow?.Detach();
+        _screen.Stop();
+        _poller.Stop();
+        if (!string.IsNullOrEmpty(serial))
+        {
+            await Task.Run(() => _keepAwake.Pop(serial));
+            // 电源状态同步（对齐 v1）：屏幕亮着且锁着时补发一次 POWER，让显示电源与实际一致
+            try
+            {
+                var st = _adb.GetScreenState(serial);
+                if (st.Valid && st.On && st.Locked) _adb.SendKey(serial, 26);
+            }
+            catch { }
+        }
+        UpdateStatus();
+    }
+
+    /// <summary>转发启动 1.2 秒后发一次音量+ / 音量-，叫醒空闲手机的音频输出通路，音量前后不变。</summary>
+    private async Task WakeAudioPathAsync(string serial)
+    {
+        try
+        {
+            await Task.Delay(1200);
+            if (!_screen.IsRunning) return;
+            await Task.Run(() =>
+            {
+                _adb.SendKey(serial, 24);
+                _adb.SendKey(serial, 25);
+            });
+        }
+        catch { }
+    }
+
+    private static int CountOtherScrcpy(bool ownRunning)
+    {
+        try
+        {
+            return Math.Max(0, Process.GetProcessesByName("scrcpy").Length - (ownRunning ? 1 : 0));
+        }
+        catch { return 0; }
     }
 
     /// <summary>轮询等待 scrcpy 窗口建好，然后嵌入。失败降级到原生窗口。</summary>
@@ -197,7 +375,7 @@ public partial class App : System.Windows.Application
         _embedTimer.Tick += (_, _) =>
         {
             _embedTicks++;
-            // 按我们设定的标题前缀找 v2 自己的窗口（v1 的窗口标题是设备ID，不会误匹配）
+            // 按我们设定的标题前缀找 v2 自己的窗口（FindWindowByPrefix 已校验进程归属）
             var prefix = $"ScrcpyBridge|{_screen.Serial}";
             var hwnd = NativeMethods.FindWindowByPrefix(prefix);
             if (hwnd != IntPtr.Zero && _mainWindow is not null && _mainWindow.TryEmbed(hwnd))
@@ -215,14 +393,325 @@ public partial class App : System.Windows.Application
         _embedTimer.Start();
     }
 
+    // ---------- 投屏开关 / 模式 / 置顶 ----------
+
+    public void ToggleScreen() => _ = ToggleScreenAsync();
+
+    private async Task ToggleScreenAsync(bool skipUnlockIfEnabling = false)
+    {
+        if (!_screen.IsRunning)
+        {
+            _config.Settings.Screen = true;
+            _config.Save();
+            await StartForwardingAsync(skipUnlock: false, userInitiated: true);
+            return;
+        }
+        // 开关投屏 = 音频不中断的整路重启（画音同进程，这是可接受的代价）
+        _config.Settings.Screen = !_config.Settings.Screen;
+        _config.Save();
+        var enable = _config.Settings.Screen;
+        await RestartForwardingCoreAsync(skipUnlock: !enable || skipUnlockIfEnabling);
+        _tray.Notify("投屏", enable ? "已开启手机画面" : "已回到纯音频转发");
+    }
+
+    public void SetWindowMode(string mode) => _ = SetModeAsync(mode);
+
+    private async Task SetModeAsync(string mode)
+    {
+        if (_screen.IsNative == (mode == "native")) return;
+        if (_screen.IsRunning)
+        {
+            await _gate.WaitAsync();
+            try
+            {
+                await StopCoreAsync();
+                _screen.SetMode(mode);
+                await StartCoreAsync(skipUnlock: true);
+            }
+            finally { _gate.Release(); }
+        }
+        else _screen.SetMode(mode);
+        _tray.Notify("窗口模式", mode == "native" ? "scrcpy 原生窗口" : "程序窗口");
+        UpdateStatus();
+    }
+
+    public void ToggleTop() => _ = ToggleTopAsync();
+
+    private async Task ToggleTopAsync()
+    {
+        _screen.SetOnTop(!_config.Settings.OnTop);
+        if (_mainWindow is not null) _mainWindow.Topmost = _config.Settings.OnTop;
+        // 原生模式的置顶要重启投屏才生效
+        if (_screen.IsNative && _screen.IsRunning)
+            await RestartForwardingCoreAsync(skipUnlock: true);
+        UpdateStatus();
+    }
+
+    public void ResetWindowSize()
+    {
+        _screen.ResetSizes();
+        _tray.Notify("窗口尺寸", "已重置，按屏幕默认重算");
+    }
+
+    // ---------- 唤醒解锁 ----------
+
+    public void WakeUnlock() => DoWake();
+
+    private async void DoWake()
+    {
+        var serial = _screen.Serial ?? _config.Settings.Serial;
+        if (string.IsNullOrEmpty(serial)) return;
+
+        UnlockService.Result r;
+        if (_screen.IsRunning)
+        {
+            // 投屏时屏幕归 scrcpy 管，adb 点不亮：先停转发拿回屏幕 → 强唤醒解锁 → 重启转发
+            await _gate.WaitAsync();
+            try
+            {
+                await StopCoreAsync();
+                await Task.Delay(400); // 等 scrcpy 释放显示电源
+                r = await UnlockWithPinPromptAsync(serial, forceWake: true);
+                await StartCoreAsync(skipUnlock: true); // 刚解完锁，跳过启动前解锁，避免解两次
+            }
+            finally { _gate.Release(); }
+        }
+        else
+        {
+            r = await UnlockWithPinPromptAsync(serial, forceWake: true);
+        }
+
+        if (!r.Ok && r.Message == "NEED_PIN")
+            _tray.Notify("唤醒解锁失败", "没有已保存的密码或已取消录入；可点「忘记解锁密码」后重试");
+        else if (r.Ok)
+            _tray.Notify("唤醒解锁", r.Message);
+        else
+            _tray.Notify("唤醒解锁失败", r.Message);
+    }
+
+    /// <summary>解锁；遇到 NEED_PIN（首次没存密码）时弹一次输入框，保存后自动重试。取消则原样返回。</summary>
+    private async Task<UnlockService.Result> UnlockWithPinPromptAsync(string serial, bool forceWake = false)
+    {
+        var r = await _unlock.InvokeAsync(serial, forceWake);
+        if (r.Message != "NEED_PIN") return r;
+        var win = new PinPromptWindow();
+        win.ShowDialog();
+        var pin = win.Result;
+        if (string.IsNullOrEmpty(pin))
+            return new UnlockService.Result(false, "NEED_PIN");
+        _unlock.SavePin(pin);
+        return await _unlock.InvokeAsync(serial, forceWake);
+    }
+
+    // ---------- 设备管理 ----------
+
+    public void SelectDevice(string serial) => _ = SelectDeviceAsync(serial);
+
+    private async Task SelectDeviceAsync(string serial)
+    {
+        _manualPick = serial; // 手动选过的设备不被插线自动切换抢走
+        _screen.Serial = serial;
+        if (_screen.IsRunning)
+            await RestartForwardingCoreAsync(skipUnlock: true);
+        else
+            await StartForwardingAsync(skipUnlock: false, userInitiated: true);
+        _tray.Notify("已切换设备", DeviceLabelOf(serial));
+    }
+
+    public void ConnectAddress(string addr) => _ = ConnectAddressAsync(addr);
+
+    private async Task ConnectAddressAsync(string addr)
+    {
+        var r = await Task.Run(() => _devices.Connect(addr));
+        var ok = r.Contains("connected", StringComparison.OrdinalIgnoreCase);
+        _tray.Notify("连接设备", ok ? $"已连接 {addr}" : r);
+        RefreshCacheAsync();
+    }
+
+    public async void AddDevice()
+    {
+        var (ok, addr, _) = InputDialog.Show("添加设备",
+            "设备地址（如 192.168.1.29:45329，只填 IP 自动补 :5555）：");
+        if (!ok || string.IsNullOrEmpty(addr)) return;
+        await ConnectAddressAsync(addr);
+    }
+
+    public void RenameDevice()
+    {
+        var serial = _screen.Serial ?? _config.Settings.Serial;
+        if (string.IsNullOrEmpty(serial))
+        {
+            _tray.Notify("重命名设备", "没有选中的设备");
+            return;
+        }
+        var (ok, name, _) = InputDialog.Show("重命名此设备",
+            "设备名称（留空恢复默认）：", initial1: DeviceLabelOf(serial));
+        if (!ok) return; // 取消：保持不变
+        _devices.Rename(serial, name);
+        UpdateStatus();
+        _tray.Notify("重命名设备",
+            string.IsNullOrWhiteSpace(name) ? "已恢复默认名称" : $"已重命名为「{name}」");
+    }
+
+    public async void PairDevice()
+    {
+        var (ok, addr, code) = InputDialog.Show("配对新设备",
+            "配对地址（手机「使用配对码配对设备」弹窗中的 IP:端口）：",
+            "6 位配对码：");
+        if (!ok || string.IsNullOrEmpty(addr) || string.IsNullOrEmpty(code)) return;
+        var r = await Task.Run(() => _adb.Pair(addr, code));
+        _tray.Notify("配对", r);
+        if (r.Contains("success", StringComparison.OrdinalIgnoreCase) ||
+            r.Contains("paired", StringComparison.OrdinalIgnoreCase))
+        {
+            // 配对成功后自动扫描 mDNS 并连接可用设备（spec）
+            await Task.Run(() =>
+            {
+                foreach (var a in _adb.ListMdns()) _adb.Connect(a);
+            });
+        }
+        RefreshCacheAsync();
+    }
+
+    public async void AutoDiscover()
+    {
+        var addrs = await Task.Run(() => _adb.ListMdns());
+        if (addrs.Count == 0)
+        {
+            _tray.Notify("自动发现", "mDNS 没发现设备，确认手机「无线调试」已开启");
+            return;
+        }
+        var okCount = await Task.Run(() =>
+        {
+            var n = 0;
+            foreach (var a in addrs)
+                if (_devices.Connect(a).Contains("connected", StringComparison.OrdinalIgnoreCase)) n++;
+            return n;
+        });
+        _tray.Notify("自动发现", $"发现 {addrs.Count} 台，连接成功 {okCount} 台");
+        RefreshCacheAsync();
+    }
+
+    public async void ClearBadDevices()
+    {
+        if (_screen.IsRunning)
+            await StopForwardingAsync(markUserStopped: true); // 先停转发，避免清理到自己正用的连接
+        var n = await Task.Run(() => _devices.ClearBad());
+        _tray.Notify("清理无效设备", n > 0 ? $"已断开 {n} 条无效连接" : "没有需要清理的连接");
+        RefreshCacheAsync();
+    }
+
+    public void ForgetPin()
+    {
+        _unlock.ForgetPin();
+        _tray.Notify("忘记解锁密码", "已清除，下次解锁时重新询问");
+    }
+
+    public async void ReconnectDevice()
+    {
+        _tray.Notify("重新连接", "正在连接已保存地址与 mDNS…");
+        await EnsureConnectedAsync();
+        RefreshCacheAsync();
+        if (!_screen.IsRunning && !_userStopped)
+            await StartForwardingAsync(skipUnlock: false, userInitiated: true);
+    }
+
+    public async void RefreshDeviceList()
+    {
+        var devs = await Task.Run(() => _devices.RefreshMerged());
+        _deviceCache = devs.ToList();
+        _tray.Notify("设备列表", _deviceCache.Count == 0 ? "没有在线设备" : $"在线设备 {_deviceCache.Count} 台");
+    }
+
+    private async void RefreshCacheAsync()
+    {
+        var devs = await Task.Run(() => _devices.RefreshMerged());
+        _deviceCache = devs.ToList();
+    }
+
+    /// <summary>USB↔WiFi 自动切换（每 5 秒随设备列表刷新检查；对齐 v1 Update-Transport）。</summary>
+    private async void TransportCheck()
+    {
+        if (!_screen.IsRunning) return;
+        if ((DateTime.UtcNow - _lastSwitch).TotalSeconds < 5) return;
+        var cur = _screen.Serial;
+        if (string.IsNullOrEmpty(cur)) return;
+
+        var curDev = _deviceCache.FirstOrDefault(d => d.Serial == cur);
+        if (curDev is null)
+        {
+            // 当前设备掉线：回落到存活设备（USB 优先）
+            var fb = _deviceCache.FirstOrDefault(d => DeviceService.KindOf(d.Serial) == "USB")
+                     ?? _deviceCache.FirstOrDefault();
+            if (fb is not null) await SwitchTransportAsync(fb.Serial, "当前设备已断开，已自动切换");
+            return;
+        }
+
+        // 插线自动切换：WiFi 设备的同机型 USB 出现；机型不同不切，避免误切到另一台
+        if (DeviceService.KindOf(cur) != "WiFi" || _manualPick is not null) return;
+        if (string.IsNullOrEmpty(curDev.Model)) return;
+        var usb = _deviceCache.FirstOrDefault(d =>
+            DeviceService.KindOf(d.Serial) == "USB" && d.Model == curDev.Model);
+        if (usb is not null) await SwitchTransportAsync(usb.Serial, "已切换到有线连接");
+    }
+
+    private async Task SwitchTransportAsync(string serial, string msg)
+    {
+        _lastSwitch = DateTime.UtcNow;
+        _screen.Serial = serial;
+        await RestartForwardingCoreAsync(skipUnlock: true);
+        _tray.Notify("连接切换", $"{msg}（{DeviceLabelOf(serial)}）");
+    }
+
+    private string DeviceLabelOf(string serial)
+    {
+        var d = _deviceCache.FirstOrDefault(x => x.Serial == serial);
+        return d is null ? serial : _devices.NameOf(d);
+    }
+
+    // ---------- 媒体 / 窗口 / 菜单 ----------
+
+    public void MediaPause() => DoMediaPause();
+
+    private async void DoMediaPause()
+    {
+        var serial = _screen.Serial ?? _config.Settings.Serial;
+        var r = await Task.Run(() => _media.TogglePause(serial ?? ""));
+        _tray.Notify("媒体暂停", r.Message);
+    }
+
+    private void OnTrayClicked(object? sender, WfMouseButtons button)
+    {
+        if (button != WfMouseButtons.Right) return;
+        // 菜单用缓存的设备列表即时弹出，adb 刷新在后台进行，右键不冻结 UI
+        var menu = AppMenus.BuildTrayMenu(this);
+        menu.IsOpen = true;
+    }
+
+    private async Task OnTrayDoubleClicked()
+    {
+        if (_screen.IsRunning)
+        {
+            if (!_screen.IsNative && _mainWindow?.IsVisible == true)
+                await StopForwardingAsync(markUserStopped: true);      // 运行中且窗口可见 → 停止
+            else if (!_screen.IsNative)
+                ShowMainWindow();                                       // 窗口隐藏 → 显示窗口
+            else
+                await StopForwardingAsync(markUserStopped: true);      // 原生模式无程序窗口 → 停止
+        }
+        else
+        {
+            await StartForwardingAsync(skipUnlock: false, userInitiated: true);
+        }
+    }
+
     private void EnsureMainWindow()
     {
         if (_mainWindow is not null) return;
         _mainWindow = new MainWindow();
-        var menuItems = BuildMenuItems();
-        _mainWindow.Configure(menuItems,
-            onClose: () => { _embedTimer?.Stop(); _mainWindow?.Detach(); _screen.Stop(); },
-            onWake: () => DoWake(),
+        _mainWindow.SetCallbacks(
+            onClose: () => _ = StopForwardingAsync(markUserStopped: false),
+            onWake: DoWake,
             onSizeCommitted: (w, h) =>
             {
                 // 拖动时每一帧都会触发，防抖后只记最终尺寸
@@ -231,40 +720,49 @@ public partial class App : System.Windows.Application
                 _sizeSaveTimer.Tick += (_, _) =>
                 {
                     _sizeSaveTimer!.Stop();
-                    _screen.RememberSize(w, h);
+                    var r = _poller.CurrentRatio;
+                    _screen.RememberSize(w, h, r > 0 ? r : null);
                 };
                 _sizeSaveTimer.Start();
             });
+        RefreshWindowMenus();
     }
 
-    private List<(string header, Action click)> BuildMenuItems()
-        => new()
-        {
-            ("启动 / 停止投屏", ToggleScreen),
-            ("暂停 / 继续（手机媒体）", DoMediaPause),
-            ("唤醒并解锁", DoWake),
-            ($"修改暂停键（{_config.Settings.HotkeyPause}）", () => EditHotkey("暂停", true)),
-            ($"修改投屏键（{_config.Settings.HotkeyScreen}）", () => EditHotkey("投屏", false)),
-            ("设置（画质 / 帧率 / 音频）", OpenSettings),
-            ("重置窗口尺寸", () => { _screen.ResetSizes(); _tray.Notify("窗口尺寸", "已重置"); }),
-            ("退出", ExitApp),
-        };
-
-    private void OpenSettings()
+    public void ShowMainWindow()
     {
-        var win = new SettingsWindow(_config, () =>
+        if (_screen.IsNative)
         {
-            // 画质参数改了要重启投屏才生效
-            if (_screen.IsRunning)
-            {
-                _embedTimer?.Stop();
-                _mainWindow?.Detach();
-                _screen.Stop();
-                ToggleScreen();
-            }
-        });
-        win.ShowDialog();
+            _tray.Notify("窗口模式", "原生窗口模式下没有程序窗口，先切回「程序窗口」");
+            return;
+        }
+        EnsureMainWindow();
+        _mainWindow!.Show();
+        _mainWindow.Activate();
     }
+
+    public void ToggleFullscreen()
+    {
+        if (_mainWindow is null) return;
+        _mainWindow.ToggleFullscreen();
+    }
+
+    /// <summary>窗口顶栏菜单与托盘共用 AppMenus；状态变化后重建。</summary>
+    private void RefreshWindowMenus()
+    {
+        if (_mainWindow is null) return;
+        _mainWindow.SetMenus(AppMenus.BuildTopBarRoots(this));
+        _mainWindow.SetStatus(StatusText);
+        _mainWindow.SetDeviceTitle(DeviceTitle);
+    }
+
+    private void UpdateStatus()
+    {
+        _tray.SetActive(_screen.IsRunning);
+        RefreshWindowMenus();
+    }
+
+    public void EditPauseKey() => EditHotkey("暂停", true);
+    public void EditScreenKey() => EditHotkey("投屏", false);
 
     private void EditHotkey(string purpose, bool isPause)
     {
@@ -283,106 +781,106 @@ public partial class App : System.Windows.Application
         _tray.Notify($"{purpose}键已设置", spec);
     }
 
-    /// <summary>
-    /// 解锁；遇到 NEED_PIN（首次没存密码）时弹一次输入框，保存后自动重试。取消则原样返回。
-    /// </summary>
-    private UnlockService.Result UnlockWithPinPrompt(string serial, bool forceWake = false)
+    public void OpenSettings()
     {
-        var r = _unlock.Invoke(serial, forceWake);
-        if (r.Message == "NEED_PIN")
+        var win = new SettingsWindow(_config, () =>
         {
-            var win = new PinPromptWindow();
-            win.ShowDialog();
-            var pin = win.Result;
-            if (string.IsNullOrEmpty(pin))
-                return new UnlockService.Result(false, "NEED_PIN");
-            _unlock.SavePin(pin);
-            r = _unlock.Invoke(serial, forceWake);
-        }
-        return r;
+            // 画质参数改了要重启投屏才生效
+            if (_screen.IsRunning)
+                _ = RestartForwardingCoreAsync(skipUnlock: true);
+        });
+        win.ShowDialog();
+        UpdateStatus();
     }
 
-    private void DoWake()
+    public void ShowHotkeyHelp()
     {
-        var serial = _screen.Serial ?? _config.Settings.Serial;
-        if (string.IsNullOrEmpty(serial)) return;
-
-        // 投屏时屏幕归 scrcpy 管，adb 点不亮：先停投屏拿回屏幕 → 强唤醒解锁 → 重启投屏
-        var wasRunning = _screen.IsRunning;
-        if (wasRunning)
-        {
-            StopScreen();
-            System.Threading.Thread.Sleep(400); // 等 scrcpy 释放显示电源
-        }
-
-        var r = UnlockWithPinPrompt(serial, forceWake: wasRunning);
-
-        if (wasRunning)
-        {
-            // 解锁已完成，重启投屏时跳过启动前解锁，避免解两次
-            _skipUnlockOnce = true;
-            StartScreen();
-        }
-
-        if (!r.Ok && r.Message == "NEED_PIN")
-            _tray.Notify("需要锁屏密码", "请在托盘设置里填写，或手动解锁手机");
-        else if (r.Ok)
-            _tray.Notify("唤醒解锁", r.Message);
-        else
-            _tray.Notify("唤醒解锁失败", r.Message);
+        var s = _config.Settings;
+        System.Windows.MessageBox.Show(
+            $"暂停 / 继续（手机媒体）：{(string.IsNullOrWhiteSpace(s.HotkeyPause) ? "（禁用）" : s.HotkeyPause)}\n" +
+            $"投屏开关：{(string.IsNullOrWhiteSpace(s.HotkeyScreen) ? "（禁用）" : s.HotkeyScreen)}\n" +
+            $"全屏：主窗口内按 F11，Esc 退出\n\n" +
+            "单键快捷键会全局占用该按键；可在托盘 → 快捷键 里修改或禁用。",
+            "快捷键说明");
     }
 
-    private void SetMode(string mode)
+    public void ShowLog()
     {
-        if (_screen.IsNative == (mode == "native")) return; // 没变
-        var wasRunning = _screen.IsRunning;
-        if (wasRunning)
+        try
+        {
+            Process.Start(new ProcessStartInfo("notepad.exe", $"\"{Logger.LogPath}\""));
+        }
+        catch (Exception ex)
+        {
+            _tray.Notify("查看日志", $"打不开日志：{ex.Message}");
+        }
+    }
+
+    public void About()
+    {
+        var v = typeof(App).Assembly.GetName().Version;
+        System.Windows.MessageBox.Show(
+            $"手机音频托盘 v2\n版本 {v?.ToString(3)}\n手机声音转发 · 投屏 · 唤醒解锁",
+            "关于手机音频托盘");
+    }
+
+    // ---------- 状态展示 ----------
+
+    public bool Running => _screen.IsRunning;
+    public bool ScreenOn => _config.Settings.Screen && _screen.IsRunning;
+    public bool NativeMode => _screen.IsNative;
+    public bool OnTop => _config.Settings.OnTop;
+    public string PauseKeyText => _config.Settings.HotkeyPause;
+    public string ScreenKeyText => _config.Settings.HotkeyScreen;
+
+    public string DeviceTitle
+        => $"手机音频 - {DeviceLabelOf(_screen.Serial ?? _config.Settings.Serial ?? "")}";
+
+    public string StatusText
+    {
+        get
+        {
+            if (!_screen.IsRunning) return "○ 已停止";
+            var s = _config.Settings;
+            var mode = !s.Screen ? "纯音频" : (_screen.IsNative ? "原生窗口" : "程序窗口");
+            var fps = s.MaxFps > 0 ? $"{s.MaxFps}fps" : "不限帧";
+            return $"● 运行中 | {mode} | {s.Codec} {s.Buffer}ms {fps}";
+        }
+    }
+
+    public IReadOnlyList<(string label, string kind, Action click)> DeviceItems
+        => _deviceCache
+            .Select(d => (DeviceLabelOf(d.Serial), DeviceService.KindOf(d.Serial),
+                          (Action)(() => SelectDevice(d.Serial))))
+            .ToList();
+
+    public IReadOnlyList<string> SavedWifiOffline
+        => _config.Settings.WifiTargets
+            .Where(a => !_deviceCache.Any(d => string.Equals(d.Serial, a, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+    // ---------- 退出 / 自检 ----------
+
+    public async void ExitApp()
+    {
+        try
         {
             _embedTimer?.Stop();
+            var serial = _screen.Serial;
             _mainWindow?.Detach();
-            _mainWindow?.Hide();
             _screen.Stop();
+            _poller.Stop();
+            if (!string.IsNullOrEmpty(serial)) await Task.Run(() => _keepAwake.Pop(serial));
         }
-        _screen.SetMode(mode);
-        if (wasRunning) ToggleScreen();
-        _tray.Notify("窗口模式", mode == "native" ? "scrcpy 原生窗口" : "程序窗口");
-    }
-
-    private void ApplyTopMost()
-    {
-        if (_mainWindow is not null)
-            _mainWindow.Topmost = _config.Settings.OnTop;
-        // 原生模式的置顶要重启投屏才生效
-        if (_screen.IsNative && _screen.IsRunning)
+        catch (Exception ex) { Logger.Log($"exit cleanup: {ex.Message}"); }
+        finally
         {
-            _screen.Stop();
-            ToggleScreen();
+            try { _hotkeys.Dispose(); _tray.Dispose(); } catch { }
+            // 配置统一由 OnExit 保存，这里不再双写
+            try { _mutex?.ReleaseMutex(); } catch { }
+            _mutex?.Dispose();
+            Shutdown(0);
         }
-    }
-
-    private void DoMediaPause()
-    {
-        var serial = _screen.Serial ?? _config.Settings.Serial;
-        var r = _media.TogglePause(serial ?? "");
-        _tray.Notify("媒体暂停", r.Message);
-    }
-
-    private void ShowMainWindow()
-    {
-        if (_screen.IsNative) return; // 原生模式没有我们的窗口
-        EnsureMainWindow();
-        _mainWindow!.Show();
-        _mainWindow.Activate();
-    }
-
-    private void ExitApp()
-    {
-        _screen.Stop();
-        _sleepMonitor?.Stop();
-        _hotkeys.Dispose();
-        _tray.Dispose();
-        _config.Save();
-        Shutdown(0);
     }
 
     private void SelfTest()
@@ -400,19 +898,30 @@ public partial class App : System.Windows.Application
             var vs = adb.GetVideoSize(d.Serial);
             System.Console.WriteLine($"[selftest]   videoSize={(vs.Length == 2 ? $"{vs[0]}x{vs[1]}" : "读不到")}");
             var ss = adb.GetScreenSize(d.Serial);
-            System.Console.WriteLine($"[selftest]   screenSize={ss[0]}x{ss[1]}");
+            System.Console.WriteLine($"[selftest]   screenSize={(ss.Length == 2 ? $"{ss[0]}x{ss[1]}" : "读不到")}");
+            var mdns = adb.ListMdns();
+            System.Console.WriteLine($"[selftest]   mdns={string.Join(",", mdns)}");
             System.Console.WriteLine($"[selftest]   mediaSession={adb.HasMediaSession(d.Serial)}");
         }
+        System.Console.WriteLine("[selftest] merged devices: " +
+            DeviceService.MergeDuplicates(adb.ListDevices()).Count);
         System.Console.WriteLine("[selftest] hotkey parse Ctrl+Alt+P: " +
             HotkeyParser.TryParse("Ctrl+Alt+P", out var m, out var k) + $" mods={m} key={k}");
         System.Console.WriteLine("[selftest] hotkey parse Pause: " +
             HotkeyParser.TryParse("Pause", out var m2, out var k2) + $" mods={m2} key={k2}");
+        System.Console.WriteLine("[selftest] hotkey parse Ctrl+A+B (应拒绝): " +
+            HotkeyParser.TryParse("Ctrl+A+B", out _, out _));
         System.Console.WriteLine("[selftest] args(native=false):");
-        System.Console.WriteLine(ScrcpyProcess.GetArgsForTest(new Models.ScrcpyOptions
+        System.Console.WriteLine(ScrcpyProcess.GetArgsForTest(new ScrcpyOptions
         {
             Serial = "TEST", Screen = true, NativeWindow = false,
             MaxFps = 60, VideoBitRate = 16000000, VideoCodec = "h265",
             WindowTitle = "ScrcpyBridge|TEST", WindowWidth = 400, WindowHeight = 880,
+        }));
+        System.Console.WriteLine("[selftest] args(audio-only):");
+        System.Console.WriteLine(ScrcpyProcess.GetArgsForTest(new ScrcpyOptions
+        {
+            Serial = "TEST", Screen = false,
         }));
     }
 

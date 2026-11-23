@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
-using System.Windows.Media;
 using PhoneAudioTray.Infrastructure;
 using PhoneAudioTray.Services;
 
@@ -16,6 +15,8 @@ public partial class MainWindow : Window
     private Action<int, int>? _onSizeCommitted;
     private IntPtr _hwnd;
     private bool _embedded;
+    private bool _fullScreen;
+    private WindowState _savedState = WindowState.Normal;
 
     /// <summary>WPF 使用 DIP，Win32/SDL 使用物理像素；返回缩放比。</summary>
     private double DpiScale
@@ -40,24 +41,34 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Loaded += MainWindow_Loaded;
+        // SizeChanged 只订一次：重复嵌入不再追加 handler（旧实现每次 TryEmbed 加一个，永不退订）
+        ContentArea.SizeChanged += (_, _) =>
+        {
+            if (_embedded)
+            {
+                var (cw, ch) = ContentPixelSize();
+                _embed.Resize(cw, ch);
+            }
+        };
     }
 
-    /// <summary>由 App 注入依赖与回调。</summary>
-    public void Configure(IReadOnlyList<(string header, Action click)> menuItems,
-        Action onClose, Action onWake, Action<int, int>? onSizeCommitted = null)
+    /// <summary>由 App 注入回调。</summary>
+    public void SetCallbacks(Action onClose, Action onWake, Action<int, int> onSizeCommitted)
     {
         _onClose = onClose;
         _onWake = onWake;
         _onSizeCommitted = onSizeCommitted;
-
-        MenuRoot.Items.Clear();
-        foreach (var (header, click) in menuItems)
-        {
-            var mi = new MenuItem { Header = header };
-            mi.Click += (_, _) => click();
-            MenuRoot.Items.Add(mi);
-        }
     }
+
+    /// <summary>顶栏五根菜单由 App 用 AppMenus 构建（与托盘菜单同一份定义）。</summary>
+    public void SetMenus(IReadOnlyList<MenuItem> roots)
+    {
+        MenuRoot.Items.Clear();
+        foreach (var root in roots) MenuRoot.Items.Add(root);
+    }
+
+    public void SetStatus(string text) => StatusText.Text = text;
+    public void SetDeviceTitle(string text) => DeviceTitle.Text = text;
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
@@ -97,23 +108,46 @@ public partial class MainWindow : Window
         var s = DpiScale;
         var offsetY = (int)Math.Round(TopBar.ActualHeight * s);
         _embedded = _embed.Attach(scrcpyHwnd, _hwnd, 0, offsetY, w, h);
-        if (!_embedded) return false;
-
-        ContentArea.SizeChanged += (_, _) =>
-        {
-            if (_embedded)
-            {
-                var (cw, ch) = ContentPixelSize();
-                _embed.Resize(cw, ch);
-            }
-        };
-        return true;
+        return _embedded;
     }
 
     public void Detach() { _embed.Detach(); _embedded = false; }
 
     public void ShowSleepOverlay(bool show)
         => SleepOverlay.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+
+    public void ToggleFullscreen()
+    {
+        if (!_fullScreen)
+        {
+            _fullScreen = true;
+            _savedState = WindowState;
+            Topmost = true;
+            WindowState = WindowState.Maximized;
+            ResizeMode = ResizeMode.NoResize;
+        }
+        else
+        {
+            _fullScreen = false;
+            Topmost = false; // 置顶恢复交给 App 按设置处理
+            WindowState = _savedState;
+            ResizeMode = ResizeMode.CanResizeWithGrip;
+        }
+    }
+
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.F11)
+        {
+            ToggleFullscreen();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape && _fullScreen)
+        {
+            ToggleFullscreen();
+            e.Handled = true;
+        }
+    }
 
     private void TopBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {

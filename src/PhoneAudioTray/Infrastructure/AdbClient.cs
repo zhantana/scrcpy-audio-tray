@@ -118,12 +118,60 @@ public sealed class AdbClient
 
     public void Disconnect(string serial) => Run($"disconnect {serial}");
 
+    public string Pair(string address, string code)
+    {
+        if (!Regex.IsMatch(address, @":\d+$")) address += ":5555";
+        return Run($"pair {address} {code}").output.Trim();
+    }
+
+    /// <summary>列出 mDNS 自动发现到的无线调试地址（_adb-tls-connect._tcp）。</summary>
+    public List<string> ListMdns()
+    {
+        var (_, o) = Run("mdns services");
+        var addrs = new List<string>();
+        foreach (var line in o.Split('\n'))
+        {
+            if (!line.Contains("_adb-tls-connect._tcp")) continue;
+            var m = Regex.Match(line, @"(\d+\.\d+\.\d+\.\d+:\d+)");
+            if (m.Success) addrs.Add(m.Groups[1].Value);
+        }
+        return addrs.Distinct().ToList();
+    }
+
+    public record DeviceStateInfo(string Serial, string State, string Model);
+
+    /// <summary>全部 adb 记录（含 offline/unauthorized），供无效连接清理使用。</summary>
+    public IReadOnlyList<DeviceStateInfo> ListDevicesAll()
+    {
+        var (_, o) = Run("devices -l");
+        var list = new List<DeviceStateInfo>();
+        foreach (var line in o.Split('\n'))
+        {
+            var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2 || parts[0] == "List" || parts[1] == "devices") continue;
+            var model = Regex.Match(line, @"model:(\S+)").Groups[1].Value;
+            list.Add(new DeviceStateInfo(parts[0], parts[1], model));
+        }
+        return list;
+    }
+
+    /// <summary>读 screen_off_timeout 原值。读不到返回 -1。</summary>
+    public int GetScreenTimeout(string serial)
+    {
+        var o = Shell(serial, "settings get system screen_off_timeout");
+        return int.TryParse(o.Trim(), out var v) ? v : -1;
+    }
+
+    public void SetScreenTimeout(string serial, int ms)
+        => Shell(serial, $"settings put system screen_off_timeout {ms}");
+
+    /// <summary>物理屏分辨率。读不到返回空数组，由调用方回落到虚拟屏或默认比例。</summary>
     public int[] GetScreenSize(string serial)
     {
         var o = Shell(serial, "wm size");
         var m = Regex.Match(o, @"(\d+)x(\d+)");
         if (m.Success) return new[] { int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value) };
-        return new[] { 1080, 2400 };
+        return Array.Empty<int>();
     }
 
     /// <summary>读 scrcpy 虚拟屏宽高（= 视频流真实方向），App 横竖屏时会变。</summary>
@@ -151,20 +199,12 @@ public sealed class AdbClient
     public void DismissKeyguard(string serial) => Shell(serial, "wm dismiss-keyguard");
 
     /// <summary>
-    /// 设备状态原文。必须合并两条命令：isKeyguardShowing 在 dumpsys window 里，
+    /// 设备状态结构化判定。必须合并两条命令：isKeyguardShowing 在 dumpsys window 里，
     /// interactiveState/screenState 在 dumpsys window policy 里——实测 policy 输出无
     /// isKeyguardShowing，只跑一条会恒判未锁（对齐 v1 的合并查询）。
     /// </summary>
-    public string GetDeviceState(string serial)
-    {
-        var o = Shell(serial, "dumpsys window policy");
-        o += "\n" + Shell(serial, "dumpsys window");
-        return o;
-    }
-
     public record ScreenState(bool On, bool Locked, bool Valid);
 
-    /// <summary>息屏/锁屏判定：interactiveState 优先，读不到退回 screenState。</summary>
     public ScreenState GetScreenState(string serial)
     {
         var txt = Shell(serial, "dumpsys window policy");
