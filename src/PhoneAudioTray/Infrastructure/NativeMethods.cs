@@ -61,6 +61,57 @@ public static class NativeMethods
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    // ---- 边缘拉伸热区（WH_MOUSE_LL 钩子 + 模拟 WM_NCLBUTTONDOWN） ----
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEHOOKSTRUCT
+    {
+        public POINT pt;
+        public IntPtr hwnd;
+        public uint wHitTestCode;
+        public IntPtr dwExtraInfo;
+    }
+
+    public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandle(string? name);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr hCursor);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT pt);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCapture(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    public const int WH_MOUSE_LL = 14;
+    public const int WM_MOUSEMOVE = 0x0200;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_LBUTTONUP = 0x0202;
+    public const int WM_CAPTURECHANGED = 0x0215;
+    public const int WM_NCLBUTTONDOWN = 0xA1;
+    // 非客户区命中码：边缘拉伸方向
+    public const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14,
+                     HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+    // 系统调整光标
+    public const int IDC_SIZEWE = 32644, IDC_SIZENS = 32645, IDC_SIZENWSE = 32642, IDC_SIZENESW = 32643;
+
+
     /// <summary>
     /// 按窗口标题前缀查找 v2 自己的画面窗口（标题为 ScrcpyBridge|serial）。
     /// 必须校验窗口属于 scrcpy 进程且可见，否则任何标题碰巧匹配的第三方窗口都会被误嵌入。

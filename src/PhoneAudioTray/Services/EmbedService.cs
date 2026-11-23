@@ -49,7 +49,7 @@ public sealed class EmbedService
                 return false;
             }
 
-            Resize(width, height);
+            Resize(_offsetX, _offsetY, width, height);
 
             // SDL 有时会改回自己的尺寸，读回校对，最多强设 3 次
             for (var i = 0; i < 3; i++)
@@ -91,11 +91,13 @@ public sealed class EmbedService
         catch { }
     }
 
-    public void Resize(int width, int height)
+    public void Resize(int x, int y, int width, int height)
     {
         if (!IsEmbedded || width <= 0 || height <= 0) return;
+        _offsetX = x;
+        _offsetY = y;
         var flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW;
-        NativeMethods.SetWindowPos(_child, IntPtr.Zero, _offsetX, _offsetY, width, height, flags);
+        NativeMethods.SetWindowPos(_child, IntPtr.Zero, x, y, width, height, flags);
     }
 
     /// <summary>降级：恢复原样式并脱离父窗口，让 scrcpy 自己显示。</summary>
