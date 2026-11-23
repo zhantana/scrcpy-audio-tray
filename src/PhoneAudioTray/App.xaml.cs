@@ -133,11 +133,13 @@ public partial class App : System.Windows.Application, IMenuHost
         _hotkeys.ScreenTogglePressed += (_, _) => _ = ToggleScreenAsync();
         _hotkeys.RegisterFailed += (_, msg) => _tray.Notify("快捷键", msg);
 
-        _screen.StateChanged += (_, _) =>
+        // proc.Exited 从线程池线程触发（Process.CompletionCallback），而 UpdateStatus
+        // 会重建 WPF 菜单/托盘图标，必须在 STA UI 线程执行，故统一封送
+        _screen.StateChanged += (_, _) => Dispatcher.BeginInvoke(() =>
         {
             if (!_screen.IsRunning) _poller.Stop();
             UpdateStatus();
-        };
+        });
 
         _screen.VideoSizeDetected += (w, h) => Dispatcher.BeginInvoke(() => OnVideoTexture(w, h));
 
