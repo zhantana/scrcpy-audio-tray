@@ -16,7 +16,6 @@ public sealed class EmbedService
     private int _offsetY;
 
     public bool IsEmbedded => _embedded && _child != IntPtr.Zero && NativeMethods.IsWindow(_child);
-    public IntPtr ChildHandle => _child;
 
     /// <summary>
     /// 把 scrcpy 的窗口（由进程 MainWindowHandle 传入）嵌入。
@@ -43,7 +42,12 @@ public sealed class EmbedService
             NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, new IntPtr(newStyle));
 
             NativeMethods.SetParent(hwnd, parentHandle);
-            if (NativeMethods.GetParent(hwnd) != parentHandle) return false;
+            if (NativeMethods.GetParent(hwnd) != parentHandle)
+            {
+                // SetParent 失败时样式已被改掉，必须恢复，否则子窗口永久隐藏/样式损坏
+                UndoPartial(hwnd);
+                return false;
+            }
 
             Resize(width, height);
 
@@ -67,8 +71,24 @@ public sealed class EmbedService
         catch (Exception ex)
         {
             Logger.Log($"attach failed: {ex.Message}");
+            if (_child == IntPtr.Zero) UndoPartial(hwnd);
             return false;
         }
+    }
+
+    /// <summary>Attach 半途失败时把窗口样式与可见性恢复原状，让降级路径能正常显示。</summary>
+    private void UndoPartial(IntPtr hwnd)
+    {
+        try
+        {
+            if (!NativeMethods.IsWindow(hwnd)) return;
+            NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, new IntPtr(_originalStyle));
+            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_NOZORDER |
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+            NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOW);
+        }
+        catch { }
     }
 
     public void Resize(int width, int height)

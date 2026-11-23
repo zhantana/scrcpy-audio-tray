@@ -24,19 +24,12 @@ public sealed class ScrcpyProcess : IDisposable
         }
     }
 
-    public IntPtr MainWindowHandle
-    {
-        get
-        {
-            try { _process?.Refresh(); return _process?.MainWindowHandle ?? IntPtr.Zero; }
-            catch { return IntPtr.Zero; }
-        }
-    }
-
     public ScrcpyProcess(string exe) => _exe = exe;
 
     public void Start(ScrcpyOptions o)
     {
+        // 防御：运行中重复 Start 会覆盖旧进程引用，scrcpy 变孤儿。先停旧的。
+        Stop();
         var args = BuildArgs(o);
         var psi = new ProcessStartInfo(_exe, args)
         {
@@ -48,8 +41,15 @@ public sealed class ScrcpyProcess : IDisposable
         if (_process is not null)
         {
             _process.EnableRaisingEvents = true;
-            _process.Exited += (_, _) => Exited?.Invoke(this, EventArgs.Empty);
+            _process.Exited += OnExited;
         }
+    }
+
+    private void OnExited(object? sender, EventArgs e)
+    {
+        try { _process?.Dispose(); } catch { }
+        _process = null;
+        Exited?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>集中构造所有 scrcpy 参数。</summary>
@@ -112,7 +112,10 @@ public sealed class ScrcpyProcess : IDisposable
     public static string GetArgsForTest(ScrcpyOptions o) => BuildArgs(o);
 
     private static string Quote(string s)
-        => s.Any(char.IsWhiteSpace) ? $"\"{s}\"" : s;
+    {
+        if (!s.Any(char.IsWhiteSpace) && !s.Contains('"')) return s;
+        return "\"" + s.Replace("\"", "\\\"") + "\"";
+    }
 
     public void Stop()
     {

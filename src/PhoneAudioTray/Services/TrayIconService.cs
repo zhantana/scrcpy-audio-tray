@@ -18,6 +18,9 @@ public sealed class TrayIconService : IDisposable
     public event EventHandler<WfMouseButtons>? Clicked;
     public event EventHandler? DoubleClicked;
 
+    /// <summary>图标文件缺失回退到系统图标（运行/停止状态无法从图标区分），供上层提示。</summary>
+    public bool IconFallback { get; private set; }
+
     public TrayIconService(string appDir)
     {
         _idle = LoadIcon(Path.Combine(appDir, "Resources", "tray-idle.ico"));
@@ -32,8 +35,12 @@ public sealed class TrayIconService : IDisposable
         _icon.MouseDoubleClick += (_, _) => DoubleClicked?.Invoke(this, EventArgs.Empty);
     }
 
-    private static Icon LoadIcon(string path)
-        => File.Exists(path) ? new Icon(path) : SystemIcons.Application;
+    private Icon LoadIcon(string path)
+    {
+        if (File.Exists(path)) return new Icon(path);
+        IconFallback = true;
+        return SystemIcons.Application;
+    }
 
     public void SetActive(bool active) => _icon.Icon = active ? _active : _idle;
 

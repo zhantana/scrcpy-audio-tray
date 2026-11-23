@@ -10,6 +10,9 @@ public static class Logger
     private static readonly object Gate = new();
     private static readonly string Path = System.IO.Path.Combine(AppContext.BaseDirectory, "tray-error.log");
 
+    /// <summary>日志文件完整路径，供「查看日志」入口打开。</summary>
+    public static string LogPath => Path;
+
     public static void Log(string message)
     {
         try

@@ -57,42 +57,34 @@ public static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int count);
 
-    /// <summary>按窗口类名查找第一个可见窗口。scrcpy 的画面窗口类是 SDL_app，
-    /// 标题每次启动都变（如 "22081212C"），MainWindowHandle 也不指向它，只能靠类名。</summary>
-    public static IntPtr FindWindowByClass(string className, bool visibleOnly = true)
-    {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((h, _) =>
-        {
-            if (visibleOnly && !IsWindowVisible(h)) return true;
-            var sb = new System.Text.StringBuilder(256);
-            GetClassName(h, sb, sb.Capacity);
-            if (string.Equals(sb.ToString(), className, StringComparison.OrdinalIgnoreCase))
-            {
-                found = h;
-                return false;
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
-    /// <summary>按窗口标题前缀查找。用于按我们设定的 ScrcpyBridge|serial 标题定位 v2 自己的画面窗口。</summary>
+    /// <summary>
+    /// 按窗口标题前缀查找 v2 自己的画面窗口（标题为 ScrcpyBridge|serial）。
+    /// 必须校验窗口属于 scrcpy 进程且可见，否则任何标题碰巧匹配的第三方窗口都会被误嵌入。
+    /// </summary>
     public static IntPtr FindWindowByPrefix(string prefix)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, _) =>
         {
+            if (!IsWindowVisible(h)) return true;
             var sb = new System.Text.StringBuilder(512);
             GetWindowText(h, sb, sb.Capacity);
-            if (sb.ToString().StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (!sb.ToString().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+
+            GetWindowThreadProcessId(h, out var pid);
+            try
             {
-                found = h;
-                return false;
+                using var p = System.Diagnostics.Process.GetProcessById((int)pid);
+                if (!string.Equals(p.ProcessName, "scrcpy", StringComparison.OrdinalIgnoreCase)) return true;
             }
-            return true;
+            catch { return true; }
+
+            found = h;
+            return false;
         }, IntPtr.Zero);
         return found;
     }

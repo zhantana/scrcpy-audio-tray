@@ -47,6 +47,7 @@ public static class HotkeyParser
         key = 0;
         if (string.IsNullOrWhiteSpace(spec)) return false;
 
+        var nonModifierCount = 0;
         foreach (var raw in spec.Split('+'))
         {
             var p = raw.Trim();
@@ -60,9 +61,11 @@ public static class HotkeyParser
                 case "win": modifiers |= 0x0008; continue;
             }
 
-            // 单个数字/字母转成标准键名
+            // 单个数字/字母转成标准键名；RegisterHotKey 只能绑一个主键，多键写法直接拒绝
             string name = p.Length == 1 ? (char.IsDigit(p[0]) ? "D" + p : p.ToUpperInvariant()) : p;
             if (!Enum.TryParse<Keys>(name, true, out var k)) return false;
+            nonModifierCount++;
+            if (nonModifierCount > 1) return false;
             key = (uint)k;
         }
         return key != 0;

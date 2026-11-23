@@ -12,10 +12,17 @@ public sealed class ConfigService
     private readonly string _settingsPath;
     public AppSettings Settings { get; private set; } = new();
 
+    /// <summary>本次 Load 读到了损坏的配置文件（已留档，值回落默认）。</summary>
+    public bool LoadCorrupt { get; private set; }
+
     public ConfigService()
     {
         var dir = AppContext.BaseDirectory;
         _settingsPath = Path.Combine(dir, "settings.json");
+        JsonStore.Corrupted += path =>
+        {
+            if (path == _settingsPath) LoadCorrupt = true;
+        };
     }
 
     public void Load()
@@ -36,5 +43,9 @@ public sealed class ConfigService
         Settings.WifiTargets ??= new List<string>();
     }
 
-    public void Save() => JsonStore.Write(_settingsPath, Settings);
+    public void Save()
+    {
+        try { JsonStore.Write(_settingsPath, Settings); }
+        catch (Exception ex) { Logger.Log($"save settings failed: {ex.Message}"); }
+    }
 }

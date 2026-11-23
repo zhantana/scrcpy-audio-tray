@@ -15,7 +15,7 @@
                     <TextBlock Text="视频码率" Foreground="#DDD" FontSize="13"/>
                     <TextBlock Text="越高越清晰，编码和传输压力越大" Foreground="#888" FontSize="11"/>
                 </StackPanel>
-                <ComboBox x:Name="CmbBitrate" Width="150" VerticalAlignment="Center" SelectionChanged="CmbBitrate_SelectionChanged">
+                <ComboBox x:Name="CmbBitrate" Width="150" VerticalAlignment="Center">
                     <ComboBoxItem Content="4 Mbps" Tag="4000000"/>
                     <ComboBoxItem Content="8 Mbps（scrcpy 默认）" Tag="8000000"/>
                     <ComboBoxItem Content="16 Mbps（推荐）" Tag="16000000" IsSelected="True"/>
