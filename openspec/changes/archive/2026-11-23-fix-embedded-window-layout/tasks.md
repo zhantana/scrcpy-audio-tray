@@ -7,4 +7,4 @@
 - [x] 5. 主窗口尺寸变化防抖后调 `_screen.RememberSize(w, h)`，按横竖方向分别记忆。
 - [x] 6. 确认 v2 中无横竖屏方向轮询触发点——`ScreenService` 有方向判断但没有定时检测 scrcpy 虚拟屏尺寸的机制，方向切换自动重算记为未验证（见 summary）。
 - [x] 7. 编译 `dotnet build` 通过（0 错误 0 警告）；发布版 `--selftest` 通过（设备在线、videoSize 与屏幕比例一致、启动参数含 window-width/height）。真机目视验证待用户执行。
-- [ ] 8. 归档：真机目视验证后把本变更移入 `openspec/changes/archive/`，更新 `openspec/specs/phone-audio-bridge/spec.md`。
+- [x] 8. 归档：真机目视验证通过（用户确认，2026-11-23）后移入 `openspec/changes/archive/`，spec「单行顶部栏」增量已合并进主 spec。
