@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using PhoneAudioTray.Models;
 
 namespace PhoneAudioTray.Infrastructure;
@@ -14,6 +15,9 @@ public sealed class ScrcpyProcess : IDisposable
     private readonly string _exe;
 
     public event EventHandler? Exited;
+
+    /// <summary>scrcpy 在 stderr 报告实际视频流尺寸（"Initial texture: WxH"），比例最权威。</summary>
+    public event Action<int, int>? VideoSizeDetected;
 
     public bool IsRunning
     {
@@ -35,6 +39,7 @@ public sealed class ScrcpyProcess : IDisposable
         {
             UseShellExecute = false,
             CreateNoWindow = true, // 只藏控制台，画面窗口照常创建
+            RedirectStandardError = true, // 捕获 "Initial texture" 取真实流尺寸；必须异步读，否则管道满会卡住 scrcpy
             WorkingDirectory = Path.GetDirectoryName(_exe) ?? "",
         };
         _process = Process.Start(psi);
@@ -42,7 +47,17 @@ public sealed class ScrcpyProcess : IDisposable
         {
             _process.EnableRaisingEvents = true;
             _process.Exited += OnExited;
+            _process.ErrorDataReceived += OnErrorLine;
+            _process.BeginErrorReadLine();
         }
+    }
+
+    private void OnErrorLine(object? sender, DataReceivedEventArgs e)
+    {
+        if (e.Data is null) return;
+        var m = Regex.Match(e.Data, @"Initial texture: (\d+)x(\d+)");
+        if (m.Success)
+            VideoSizeDetected?.Invoke(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value));
     }
 
     private void OnExited(object? sender, EventArgs e)

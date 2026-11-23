@@ -3,47 +3,94 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="手机音频托盘" Height="900" Width="440"
         WindowStyle="None" ResizeMode="CanResizeWithGrip"
-        Background="#121216" MinWidth="360" MinHeight="480"
+        Background="#121216" MinWidth="200" MinHeight="320"
         AllowsTransparency="False"
         PreviewKeyDown="Window_PreviewKeyDown">
+    <!-- GlassFrameThickness=0 去掉 WindowStyle=None 残留的顶部白边；CaptionHeight=0
+         让整个窗口保持客户区语义，拖动/双击最大化仍由 TopBar 的鼠标逻辑处理 -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" GlassFrameThickness="0" CornerRadius="0"
+                      ResizeBorderThickness="6" UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <!-- 深色菜单样式：顶栏底色 #1C1C22，默认系统菜单黑字不可读；弹出层同步深色，避免白字白底。
+             隐式样式只在本窗口资源内生效，托盘右键菜单（WinForms 侧弹出）不受影响 -->
+        <Style TargetType="MenuItem">
+            <Setter Property="Foreground" Value="#EEE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Grid>
+                            <Border x:Name="Bd" Background="Transparent" Padding="8,2">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="Check" Grid.Column="0" Text="✓" Foreground="#7FBF7F"
+                                               Visibility="Collapsed" VerticalAlignment="Center"/>
+                                    <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False"
+                                   Placement="Right" VerticalOffset="-6"
+                                   IsOpen="{TemplateBinding IsSubmenuOpen}" PopupAnimation="Fade">
+                                <Border Background="#2A2A32" BorderBrush="#555" BorderThickness="1" CornerRadius="4"
+                                        Padding="0,4" Margin="0,0,8,8" SnapsToDevicePixels="True">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Role" Value="TopLevelHeader">
+                                <Setter TargetName="PART_Popup" Property="Placement" Value="Bottom"/>
+                                <Setter TargetName="PART_Popup" Property="VerticalOffset" Value="0"/>
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3A3A46"/>
+                            </Trigger>
+                            <Trigger Property="IsSubmenuOpen" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3A3A46"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#777"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <Grid x:Name="Root">
         <Grid.RowDefinitions>
-            <RowDefinition Height="40"/>
+            <RowDefinition Height="28"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="24"/>
         </Grid.RowDefinitions>
 
-        <!-- 单行顶栏：标题 / 设备·音频·视图·帮助·关于 / 最小化 / 关闭。最大化靠双击顶栏 -->
+        <!-- 单行顶栏：操作菜单 / 最小化 / 关闭。最大化靠双击顶栏 -->
         <Grid x:Name="TopBar" Grid.Row="0" Background="#1C1C22" MouseLeftButtonDown="TopBar_MouseLeftButtonDown">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <TextBlock Grid.Column="0" x:Name="DeviceTitle" Text="手机音频" VerticalAlignment="Center"
-                       Foreground="#EEE" FontSize="13" Margin="10,0,0,0"/>
+            <Menu Grid.Column="0" x:Name="MenuRoot" Background="Transparent" VerticalAlignment="Center" Margin="2,0,0,0"/>
 
-            <Menu Grid.Column="1" x:Name="MenuRoot" Background="Transparent" VerticalAlignment="Center" Margin="8,0,0,0"/>
-
-            <Button Grid.Column="3" x:Name="BtnMin" Content="─" Width="44" Height="40"
+            <Button Grid.Column="2" x:Name="BtnMin" Content="─" Width="32" Height="28"
                     Background="Transparent" Foreground="#CCC" BorderThickness="0"
-                    FontSize="16" Click="BtnMin_Click" ToolTip="最小化"/>
-            <Button Grid.Column="4" x:Name="BtnClose" Content="✕" Width="44" Height="40"
+                    FontSize="13" Click="BtnMin_Click" ToolTip="最小化"/>
+            <Button Grid.Column="3" x:Name="BtnClose" Content="✕" Width="32" Height="28"
                     Background="Transparent" Foreground="#CCC" BorderThickness="0"
-                    FontSize="14" Click="BtnClose_Click" ToolTip="停止转发并关闭窗口"/>
+                    FontSize="12" Click="BtnClose_Click" ToolTip="停止转发并关闭窗口"/>
         </Grid>
 
         <!-- 内容区：嵌入的 scrcpy 画面 -->
         <Grid Grid.Row="1" x:Name="ContentArea" Background="Black"/>
-
-        <!-- 底部状态条：运行状态 / 模式 / 编码 / 缓冲 / 帧率 -->
-        <Border Grid.Row="2" Background="#1C1C22">
-            <TextBlock x:Name="StatusText" Text="○ 已停止" Foreground="#9AA0A6" FontSize="11"
-                       VerticalAlignment="Center" Margin="10,0"/>
-        </Border>
 
         <!-- 息屏提示层：盖在内容区上，菜单栏保持可用 -->
         <Grid Grid.Row="1" x:Name="SleepOverlay" Visibility="Collapsed" Background="#E0000000">

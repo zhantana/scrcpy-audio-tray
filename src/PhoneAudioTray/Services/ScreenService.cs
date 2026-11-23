@@ -16,6 +16,9 @@ public sealed class ScreenService
 
     public event EventHandler? StateChanged;
 
+    /// <summary>scrcpy 报告的实际视频流尺寸（stderr "Initial texture: WxH"），比例最权威。</summary>
+    public event Action<int, int>? VideoSizeDetected;
+
     public bool IsRunning => _proc.IsRunning;
     public bool IsNative => _config.Settings.WindowMode == "native";
 
@@ -25,6 +28,7 @@ public sealed class ScreenService
         _adb = adb;
         _proc = proc;
         _proc.Exited += (_, _) => StateChanged?.Invoke(this, EventArgs.Empty);
+        _proc.VideoSizeDetected += (w, h) => VideoSizeDetected?.Invoke(w, h);
     }
 
     public string? Serial
@@ -81,32 +85,28 @@ public sealed class ScreenService
         return 0.45;
     }
 
-    /// <summary>按方向和记忆尺寸算出窗口应有多大。工作区不超过屏幕 95%。
-    /// ratio 已知（轮询传来）时直接用，避免再打一条 adb。</summary>
+    /// <summary>按方向算出窗口应有多大。工作区不超过屏幕 95%。
+    /// ratio 已知（轮询传来）时直接用，避免再打一条 adb。
+    /// 高度可用记忆值，宽度始终由视频比例推出（w = (h - chrome) × r）：
+    /// 记忆的宽高比若与视频流不一致，scrcpy 会 letterbox，画面窄于窗口，顶栏看起来就比画面宽。</summary>
     public (int w, int h) DesiredWindowSize(int workWidth, int workHeight, int chromeH, int inset, double? ratio = null)
     {
         var r = ratio ?? GetVideoRatio();
         bool portrait = r < 1;
         var saved = portrait ? _config.Settings.SizePortrait : _config.Settings.SizeLandscape;
-        if (saved.Length == 2 && saved[0] > 200 && saved[1] > 200)
-            return (saved[0], saved[1]);
 
         // 全部按 DIP 计算：入口的 workWidth/workHeight 来自 SystemParameters.WorkArea，
         // 出口交给 Window.Width/Height，二者都是 DIP；物理像素只在嵌入 Win32 子窗口时换算。
         int maxH = (int)(workHeight * 0.95);
-        int w, h;
-        if (portrait)
-        {
-            w = 416;
-            h = (int)((w - 2 * inset) / r) + chromeH + 2 * inset;
-            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset; }
-        }
-        else
-        {
-            w = (int)(workWidth * 0.95);
-            h = (int)((w - 2 * inset) / r) + chromeH + 2 * inset;
-            if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset; }
-        }
+        int maxW = (int)(workWidth * 0.95);
+
+        int h = (saved.Length == 2 && saved[1] > 200)
+            ? saved[1]
+            : portrait ? (int)(416 / r) + chromeH
+                       : (int)(maxW / r) + chromeH;
+        int w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset;
+        if (w > maxW) { w = maxW; h = (int)((w - 2 * inset) / r) + chromeH; }
+        if (h > maxH) { h = maxH; w = (int)((h - chromeH - 2 * inset) * r) + 2 * inset; }
         return (w, h);
     }
 

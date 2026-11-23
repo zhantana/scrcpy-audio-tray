@@ -37,8 +37,8 @@ public partial class App : System.Windows.Application, IMenuHost
     private DateTime _lastSwitch = DateTime.MinValue;
     private List<AdbClient.DeviceInfo> _deviceCache = new();
 
-    /// <summary>顶栏 40 + 状态条 24（DIP），窗口高度中不属于画面的部分。</summary>
-    private const int ChromeH = 64;
+    /// <summary>顶栏 28（DIP），窗口高度中不属于画面的部分。</summary>
+    private const int ChromeH = 28;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -138,6 +138,8 @@ public partial class App : System.Windows.Application, IMenuHost
             if (!_screen.IsRunning) _poller.Stop();
             UpdateStatus();
         };
+
+        _screen.VideoSizeDetected += (w, h) => Dispatcher.BeginInvoke(() => OnVideoTexture(w, h));
 
         _poller.AsleepChanged += (_, asleep) =>
         {
@@ -305,6 +307,7 @@ public partial class App : System.Windows.Application, IMenuHost
             var work = SystemParameters.WorkArea;
             var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, ChromeH, 0);
             var (cw, ch) = _mainWindow.ApplyWindowSize(winW, winH);
+            Logger.Log($"embed start window {winW}x{winH} content {cw}x{ch}");
             _screen.Start(cw, ch);
             StartEmbedPolling();
         }
@@ -317,6 +320,21 @@ public partial class App : System.Windows.Application, IMenuHost
         _ = WakeAudioPathAsync(serial);
         _poller.OtherBaseline = await Task.Run(() => CountOtherScrcpy(ownRunning: true));
         UpdateStatus();
+    }
+
+    /// <summary>
+    /// scrcpy 在 stderr 报告真实视频流尺寸（Initial texture）后重定窗口：
+    /// adb 查到的虚拟屏/物理屏比例与实际流有出入时会产生 letterbox 黑边，以这里为准。
+    /// stderr 线程回调，已由 Dispatcher 封送。
+    /// </summary>
+    private void OnVideoTexture(int w, int h)
+    {
+        if (w <= 0 || h <= 0) return;
+        if (!_screen.IsRunning || _screen.IsNative || _mainWindow is null) return;
+        var work = SystemParameters.WorkArea;
+        var (winW, winH) = _screen.DesiredWindowSize((int)work.Width, (int)work.Height, ChromeH, 0, (double)w / h);
+        var (cw, ch) = _mainWindow.ApplyWindowSize(winW, winH);
+        Logger.Log($"texture {w}x{h} -> window {winW}x{winH} content {cw}x{ch}");
     }
 
     private async Task StopCoreAsync()
@@ -751,8 +769,6 @@ public partial class App : System.Windows.Application, IMenuHost
     {
         if (_mainWindow is null) return;
         _mainWindow.SetMenus(AppMenus.BuildTopBarRoots(this));
-        _mainWindow.SetStatus(StatusText);
-        _mainWindow.SetDeviceTitle(DeviceTitle);
     }
 
     private void UpdateStatus()
@@ -832,9 +848,6 @@ public partial class App : System.Windows.Application, IMenuHost
     public bool OnTop => _config.Settings.OnTop;
     public string PauseKeyText => _config.Settings.HotkeyPause;
     public string ScreenKeyText => _config.Settings.HotkeyScreen;
-
-    public string DeviceTitle
-        => $"手机音频 - {DeviceLabelOf(_screen.Serial ?? _config.Settings.Serial ?? "")}";
 
     public string StatusText
     {

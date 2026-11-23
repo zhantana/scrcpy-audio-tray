@@ -67,9 +67,6 @@ public partial class MainWindow : Window
         foreach (var root in roots) MenuRoot.Items.Add(root);
     }
 
-    public void SetStatus(string text) => StatusText.Text = text;
-    public void SetDeviceTitle(string text) => DeviceTitle.Text = text;
-
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         _hwnd = new WindowInteropHelper(this).Handle;

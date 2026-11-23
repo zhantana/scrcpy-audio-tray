@@ -10,7 +10,6 @@ public interface IMenuHost
     bool NativeMode { get; }
     bool OnTop { get; }
     string StatusText { get; }
-    string DeviceTitle { get; }
     string PauseKeyText { get; }
     string ScreenKeyText { get; }
     IReadOnlyList<(string label, string kind, Action click)> DeviceItems { get; }
@@ -122,59 +121,43 @@ public static class AppMenus
             Item($"修改暂停键（{h.PauseKeyText}）", h.EditPauseKey),
             Item($"修改投屏键（{h.ScreenKeyText}）", h.EditScreenKey));
 
-    /// <summary>视图菜单。纯音频或未运行时投屏相关项置灰（对齐 v1 Update-State）。</summary>
-    private static MenuItem BuildViewMenu(IMenuHost h)
-    {
-        var screenUi = h.Running && h.ScreenOn;
-        return Sub("视图",
-            CheckItem("显示手机画面（投屏）", h.ScreenOn, h.ToggleScreen, enabled: h.Running),
-            BuildWindowModeMenu(h),
-            CheckItem("投屏窗口置顶", h.OnTop, h.ToggleTop, enabled: screenUi),
-            Item("重置窗口尺寸", h.ResetWindowSize),
-            new Separator(),
-            Item("全屏 F11", h.ToggleFullscreen));
-    }
-
     /// <summary>托盘右键菜单。</summary>
     public static ContextMenu BuildTrayMenu(IMenuHost h)
     {
         var menu = new ContextMenu();
-        menu.Items.Add(Disabled(h.StatusText));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(Item(h.Running ? "停止转发" : "启动音频转发", h.StartStopForwarding));
-        menu.Items.Add(Item("暂停 / 继续（手机媒体）", h.MediaPause));
-        menu.Items.Add(Item("唤醒并解锁", h.WakeUnlock));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(BuildDeviceMenu(h));
-        menu.Items.Add(CheckItem("显示手机画面（投屏）", h.ScreenOn, h.ToggleScreen, enabled: h.Running));
-        menu.Items.Add(BuildWindowModeMenu(h));
-        menu.Items.Add(CheckItem("投屏窗口置顶", h.OnTop, h.ToggleTop, enabled: h.Running && h.ScreenOn));
-        menu.Items.Add(Item("重置窗口尺寸", h.ResetWindowSize));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(BuildHotkeyMenu(h));
-        menu.Items.Add(Item("设置（画质 / 帧率 / 音频）", h.OpenSettings));
-        menu.Items.Add(Item("显示 / 隐藏窗口", h.ShowMainWindow));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(Item("退出", h.ExitApp));
+        foreach (var i in BuildFlatItems(h)) menu.Items.Add(i);
         return menu;
     }
 
-    /// <summary>主窗口顶栏五根菜单：设备 / 音频 / 视图 / 帮助 / 关于（spec「单行顶部栏」）。</summary>
-    public static IReadOnlyList<MenuItem> BuildTopBarRoots(IMenuHost h)
+    /// <summary>托盘与顶栏「操作」下拉共用的扁平项序列（回调与文案只有一份）。</summary>
+    private static IEnumerable<object> BuildFlatItems(IMenuHost h)
     {
-        var audio = Sub("音频",
-            Item(h.Running ? "停止转发" : "启动音频转发", h.StartStopForwarding),
-            Item("暂停 / 继续（手机媒体）", h.MediaPause),
-            new Separator(),
-            Item("唤醒并解锁", h.WakeUnlock),
-            Item("设置（画质 / 帧率 / 音频）", h.OpenSettings));
-
-        var help = Sub("帮助",
-            Item("快捷键说明", h.ShowHotkeyHelp),
-            Item("查看日志", h.ShowLog));
-
-        var about = Sub("关于", Item("关于手机音频托盘", h.About));
-
-        return new List<MenuItem> { BuildDeviceMenu(h), audio, BuildViewMenu(h), help, about };
+        yield return Disabled(h.StatusText);
+        yield return new Separator();
+        yield return Item(h.Running ? "停止转发" : "启动音频转发", h.StartStopForwarding);
+        yield return Item("暂停 / 继续（手机媒体）", h.MediaPause);
+        yield return Item("唤醒并解锁", h.WakeUnlock);
+        yield return new Separator();
+        yield return BuildDeviceMenu(h);
+        yield return CheckItem("显示手机画面（投屏）", h.ScreenOn, h.ToggleScreen, enabled: h.Running);
+        yield return BuildWindowModeMenu(h);
+        yield return CheckItem("投屏窗口置顶", h.OnTop, h.ToggleTop, enabled: h.Running && h.ScreenOn);
+        yield return Item("重置窗口尺寸", h.ResetWindowSize);
+        yield return new Separator();
+        yield return Item("全屏 F11", h.ToggleFullscreen);
+        yield return new Separator();
+        yield return BuildHotkeyMenu(h);
+        yield return Item("设置（画质 / 帧率 / 音频）", h.OpenSettings);
+        yield return Item("显示 / 隐藏窗口", h.ShowMainWindow);
+        yield return new Separator();
+        yield return Item("快捷键说明", h.ShowHotkeyHelp);
+        yield return Item("查看日志", h.ShowLog);
+        yield return Item("关于手机音频托盘", h.About);
+        yield return new Separator();
+        yield return Item("退出", h.ExitApp);
     }
+
+    /// <summary>主窗口顶栏只有一根「操作」菜单，全部功能从它下拉（与托盘菜单同一份定义）。</summary>
+    public static IReadOnlyList<MenuItem> BuildTopBarRoots(IMenuHost h)
+        => new List<MenuItem> { Sub("操作", BuildFlatItems(h).ToArray()) };
 }
